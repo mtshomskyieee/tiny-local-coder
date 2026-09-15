@@ -1,0 +1,46 @@
+name: tinylocalcoder
+services:
+  ollama:
+    image: ollama/ollama:latest
+    ports:
+      - "11434:11434"
+    environment:
+      - MODEL_NAME=${MODEL_NAME:-qwen2.5:3b}
+    entrypoint: ["/bin/sh", "/ollama-entrypoint.sh"]
+    volumes:
+      - ollama_data:/root/.ollama
+      - ./scripts/ollama-entrypoint.sh:/ollama-entrypoint.sh:ro
+    healthcheck:
+      test: ["CMD", "ollama", "list"]
+      interval: 10s
+      timeout: 10s
+      retries: 30
+      start_period: 30s
+
+  app:
+    build: .
+    depends_on:
+      ollama:
+        condition: service_healthy
+    environment:
+      OLLAMA_BASE_URL: http://ollama:11434
+      MODEL_NAME: ${MODEL_NAME:-qwen2.5:3b}
+      NUM_CTX: ${NUM_CTX:-2048}
+      THINKING_ENABLED: ${THINKING_ENABLED:-true}
+      AUTO_FIX: ${AUTO_FIX:-true}
+      AUTO_FIX_MAX: ${AUTO_FIX_MAX:-1}
+      AUTO_SKIP: ${AUTO_SKIP:-true}
+      WORKSPACE_DIR: /workspace
+      EXEC_TIMEOUT_SEC: ${EXEC_TIMEOUT_SEC:-60}
+    volumes:
+      - ./workspace:/workspace
+    ports:
+      - "8000:8000"
+    stdin_open: true
+    tty: true
+    command: ["api"]
+
+volumes:
+  ollama_data:
+    external: true
+    name: crew_pipeline_ollama_data

@@ -1,0 +1,29 @@
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+dist/
+build/
+.env
+.venv/
+venv/
+workspace/*
+!workspace/.gitkeep
+workspace/.index/
+*.log
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# AI assistant local config (not part of the project)
+CLAUDE.md
+.claude/
+.cursor/
+.cursorrules
+AGENTS.md
+GEMINI.md
+.aider*
+.codex/
+
+# Local scratch notes
+notes.txt
