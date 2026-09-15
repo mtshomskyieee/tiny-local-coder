@@ -1,14 +1,21 @@
-# TinyLocalCoder
+# 🩷🤖 TLC — Tiny Local Coder
 
-File-backed LangGraph agents for memory-compromised hosts. Runs Qwen2.5 3B via Ollama (CPU) with plan / code / execute / ask modes.
+**A coding agent that runs entirely on your machine.** No GPU, no API key, nothing leaves the box. TLC makes a 3B model with a 2048-token context behave like a competent coding agent by keeping its memory on disk and only ever showing it one step at a time.
 
-See **[docs/Architecture.md](docs/Architecture.md)** for plan → execute → fix → replan design (small-model constraints, test-by-default plans, plan-smell recovery), **[docs/orchestration.md](docs/orchestration.md)** for LangGraph agent wiring, and **[docs/use-cases.md](docs/use-cases.md)** for CLI walks (plan/code, fix, review, test).
+![TLC plan mode](docs/img/01-plan-mode.png)
+
+## Why TLC
+
+- 🩷🤖 **Runs on a memory-compromised host.** Qwen2.5 3B via Ollama on CPU, ~12 GB RAM. No GPU required.
+- 🩷🤖 **Disk is the model's memory.** The plan, the code, the command log and the Q&A transcript all live in `workspace/`, so each LLM call sees only `Goal` plus the active todo — never the whole plan.
+- 🩷🤖 **Nothing runs without your approval.** Every shell command stops at a gate: Allow / Deny / Allow all.
+- 🩷🤖 **Deterministic Python does the structural work.** Plan validation, inventory, review and path-fixing are plain code. A 3B model is never trusted to manage plan structure.
 
 ## Requirements
 
 - Docker + Docker Compose
-- ~12GB RAM (CPU-only is fine)
-- No GPU required
+- ~12 GB RAM (CPU-only is fine)
+- No GPU
 
 ## Quick start
 
@@ -19,16 +26,39 @@ cp .env.example .env   # once
 ./stop-service.sh      # stop the suite (use this instead of bare docker compose down)
 ```
 
-API listens on `http://localhost:8000`.
-
-Interactive TUI:
+The API listens on `http://localhost:8000`. Launch the interactive TUI with:
 
 ```bash
 ./cli.sh
 # equivalent: docker compose run --rm -it app tui
 ```
 
-First boot pulls `qwen2.5:3b` into the Ollama volume (slow once). The shared model volume is `crew_pipeline_ollama_data` and is kept across `./stop-service.sh`.
+First boot pulls `qwen2.5:3b` into the Ollama volume — slow, but only once. The model volume is `crew_pipeline_ollama_data` and survives `./stop-service.sh`.
+
+## How-to: your first plan
+
+**1. Enter plan mode and describe the job.** Type `/plan`, then your request:
+
+```text
+/plan
+create and run hello_world.py
+```
+
+TLC writes `workspace/plan.md` as a short numbered todo list — a few `create` steps, then one batched `py_compile`, then one short smoke check. Inspect or hand-edit it any time with `/show-plan` and `/plan-edit`.
+
+**2. Execute it.** Type `/execute-plan` (or press **F5**). TLC walks the todos one at a time, writing files and then verifying them:
+
+![Executing the plan](docs/img/02-execute.png)
+
+**3. Approve the shell command.** When a todo needs to run something, everything stops and waits for you:
+
+![Approval gate](docs/img/03-approval-gate.png)
+
+Choose **Allow** for this one command, **Deny** to skip and log it, or **Allow all** to auto-approve for the rest of the session.
+
+**4. When something fails**, TLC tries to recover on its own: one code repair and retry, then — if the *todo itself* looks wrong — one rewrite of the remaining open todos, and failing that it marks the step `[!]` and moves on. Reopen skipped steps with `/reset-todo N` and run `/execute-plan` again.
+
+Full walkthroughs for fixing, reviewing and testing are in **[docs/use-cases.md](docs/use-cases.md)**.
 
 ## Modes
 
@@ -38,18 +68,17 @@ First boot pulls `qwen2.5:3b` into the Ollama volume (slow once). The shared mod
 | `/code` | Run the next create/refine todo only (small context) |
 | `/execute-plan` | Walk todos one-by-one; each LLM call sees **only the current step** |
 | `/ask` | Q&A written to `workspace/ask.md` |
+| `/fix` | Code-only repair of the last failure |
 | `/review` | Tool-built `manifest.txt` + opinionated `review.md`, then `/execute-plan` |
 | `/test` | Plan a runnable test plan into `plan.md`, then run `/execute-plan` |
 
-Plans use small steps so a 3B model never has to hold the whole plan in context—only `Goal` + the active todo.
-
 **Default plan shape (enforced after `/plan`):** a few `create`/`refine` steps → **one** batched `py_compile` → **one** short `python3 -c` smoke check. Prefer ≤8 todos. Meta commands (`reset-todo`, …) are stripped if they leak into the plan.
 
-On execute failures: **auto-fix** (one code patch + retry) → if the todo itself looks wrong (**plan smell**), **auto-replan** rewrites remaining open todos once → otherwise **auto-skip**.
+After `/plan` finishes, the TUI prints a next-step hint. While agents work, a **thinking …** line shows elapsed time and clears when the reply arrives.
 
-After `/plan` finishes, the TUI prints a next-step hint. While agents work, a **thinking ...** line is shown and cleared when the reply arrives.
+## Session commands
 
-Session meta commands (Claude/Codex-aligned subset):
+![Command reference](docs/img/04-help.png)
 
 | Command | Role |
 |---------|------|
@@ -61,18 +90,36 @@ Session meta commands (Claude/Codex-aligned subset):
 | `/clear` (`/new`) | Reset ask/exec session logs; keeps plan + code; resets session token counter |
 | `/model` | Show current model and how to set `MODEL_NAME` |
 | `/usage` | Session + lifetime token counts (no $ cost) |
-| `/auto-fix on|off` | Enable/disable automatic repair+retry on failed steps |
-| `/auto-skip on|off` | Skip failed todos after fix and continue plan |
-| `/auto-replan on|off` | Rewrite open todos when a fix cannot repair a bad plan step |
+| `/auto-fix on\|off` | Enable/disable automatic repair+retry on failed steps |
+| `/auto-skip on\|off` | Skip failed todos after fix and continue plan |
+| `/auto-replan on\|off` | Rewrite open todos when a fix cannot repair a bad plan step |
 | `/skip-todo N` | Mark todo N as skipped (`[!]`) so execute can move on |
 | `/reset-todo N` | Reopen skipped todo N (`[!]` → `[ ]`) |
+| `/reset-all-skipped` | Reopen every skipped todo |
+| `/code show PATH` | Print a workspace file |
+| `/code update …` | Edit a named file from your prompt (writes to disk) |
+| `/archive NAME` | Copy the entire workspace into `workspace/archive/<name>` |
+| `/clear-workspace` | Move everything (except `archive/`) into `archive/<timestamp>`, blank plan + ask |
+| `/procs` | List PIDs tracked from `/execute` (ports, status) |
+| `/kill-procs` | Kill all tracked execute processes |
+| `↑` / `↓` | Recall and edit previous prompts |
 | `/help` | List commands |
 
-### Demo: create and run hello_world.py
+## How it works
 
-1. In TUI: `/plan` then ask: `create and run hello_world.py`
-2. Run `/execute-plan` (or press **F5**)
-3. Approve `python hello_world.py` when prompted (Allow / Deny / Allow all)
+Everything runs through a single compiled LangGraph `StateGraph`. Entry is always `route`, and the requested mode selects the path: `plan`, `code`, `execute_step`, `fix`, `replan`, `ask`, `critic`. Nodes don't pass state to each other in messages — they pass it through **files on disk**.
+
+The recovery ladder during `/execute-plan`:
+
+```text
+run todo fails
+  └─ junk command?      → skip immediately
+  └─ auto-fix           → one code patch, retry the same todo
+       └─ plan smell?   → auto-replan, rewrite the remaining open todos once
+       └─ otherwise     → auto-skip, mark [!] and continue
+```
+
+Design rationale and the small-model constraints that drive it: **[docs/Architecture.md](docs/Architecture.md)**. Node-by-node graph wiring and diagrams: **[docs/orchestration.md](docs/orchestration.md)**.
 
 ## File memory
 
@@ -99,7 +146,7 @@ API flow:
 
 ## Thinking critic
 
-End-of-graph node asks once whether the task is complete. Disable with:
+An end-of-graph node asks once whether the task is complete. Disable with:
 
 ```bash
 THINKING_ENABLED=false
@@ -129,3 +176,17 @@ See `.env.example`. Important knobs:
 - `POST /v1/test` `{ "prompt": "..." }` — plan then execute test workflow
 - `GET /v1/workspace/files`
 - `GET /v1/workspace/file?path=plan.md`
+
+## Screenshots
+
+The images above are real captures of the TUI driven against a real local model. Regenerate them with:
+
+```bash
+docker compose up -d ollama
+PYTHONPATH=src python3 scripts/make_screenshots.py --out docs/img
+for f in docs/img/*.svg; do magick -background none -density 200 "$f" "${f%.svg}.png"; done
+```
+
+## License
+
+MIT — see [LICENSE](LICENSE).
