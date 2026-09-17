@@ -14,6 +14,11 @@ _EXPECT_RE = re.compile(
 )
 _SKIPPED_TAIL_RE = re.compile(r"\s+[—-]\s+SKIPPED\b.*$", re.IGNORECASE)
 
+# Expect clauses that only assert "the command worked"
+_EXIT_ONLY = frozenset(
+    {"success", "ok", "exit 0", "exit=0", "exit code 0", "no error", "no errors", "succeed"}
+)
+
 
 def _clean_expect(raw: str) -> str:
     """Strip skip markers / trailing junk from an expect clause."""
@@ -55,8 +60,11 @@ def expectation_met(expect: str | None, *, exit_code: int | None, stdout: str, s
     out_l = out.lower()
     combined = f"{stdout}\n{stderr}"
 
-    # exit-only expectations
-    if exp_l in {"success", "ok", "exit 0", "exit=0", "no error", "succeed"}:
+    # exit-only expectations — check the whole clause too, so multi-word
+    # phrasings ("expect exit 0", "expect no error") are not dropped into
+    # substring matching and failed on a perfectly clean run.
+    exp_full = exp.lower().strip().rstrip(",.;")
+    if exp_full in _EXIT_ONLY or exp_l in _EXIT_ONLY:
         return True, "expect success (exit 0)"
 
     # boolean print checks — common in verify todos

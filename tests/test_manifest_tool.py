@@ -77,3 +77,28 @@ def test_build_manifest_via_memory(tmp_path: Path) -> None:
     mem = _memory(tmp_path)
     (tmp_path / "a.md").write_text("a\n", encoding="utf-8")
     assert build_manifest(mem) == ["a.md"]
+
+
+# --- focus hints come from LLM prose, so they must be read conservatively ---
+
+
+def test_focus_prefix_ignores_plain_english(tmp_path: Path) -> None:
+    """Regression: `in manifest` is prose, not a directory prefix.
+
+    The bare `in`/`only` keywords used to turn any English phrase into a
+    path prefix, which silently filtered the inventory down to nothing.
+    """
+    assert parse_focus_prefixes("one relative path per line for files in manifest") == []
+    assert parse_focus_prefixes("only the important modules") == []
+    assert parse_focus_prefixes("notes for files in manifest") == []
+    # Real directory syntax still works
+    assert parse_focus_prefixes("focus on src/") == ["src/"]
+    assert parse_focus_prefixes("only tests/unit/") == ["tests/unit/"]
+    assert parse_focus_prefixes("focus on src/api.py") == ["src/api.py"]
+
+
+def test_focus_hint_that_matches_nothing_fails_open(tmp_path: Path) -> None:
+    """An inventory of zero files is never the useful answer."""
+    mem = _memory(tmp_path)
+    (tmp_path / "a.py").write_text("a\n", encoding="utf-8")
+    assert build_manifest(mem, focus_prefixes=["nope/"]) == ["a.py"]

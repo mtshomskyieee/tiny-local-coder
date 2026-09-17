@@ -93,16 +93,18 @@ def _review_python(path: str, text: str, *, has_tests: bool) -> FileReview:
     lines = text.splitlines()
     n = len(lines)
 
-    if not text.strip():
-        rev.findings.append(Finding("medium", "File is empty."))
-        rev.summary = "Empty module."
-        return rev
-
+    # Package markers are checked first: an empty __init__.py is correct, and
+    # the fix agent creates exactly that file to repair imports.
     if path.endswith("__init__.py") and len(text.strip()) < 40:
         rev.findings.append(
             Finding("info", "Package marker only — fine if intentional.")
         )
         rev.summary = "Package init."
+        return rev
+
+    if not text.strip():
+        rev.findings.append(Finding("medium", "File is empty."))
+        rev.summary = "Empty module."
         return rev
 
     def add(sev: Severity, msg: str, line: int | None = None) -> None:
@@ -387,11 +389,14 @@ def write_review(
 
         prefixes = parse_focus_prefixes(focus_hint)
         if prefixes:
-            paths = [
+            focused = [
                 p
                 for p in paths
                 if any(p == pref.rstrip("/") or p.startswith(pref) for pref in prefixes)
             ]
+            # Fail open: never review zero files because a hint matched nothing
+            if focused:
+                paths = focused
     reviews = build_reviews(memory, paths)
     body = render_review_md(reviews, manifest_count=len(paths))
     memory.write_prototype(out_name, body)

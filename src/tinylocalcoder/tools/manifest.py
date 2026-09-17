@@ -71,11 +71,17 @@ _FOCUS_RE = re.compile(
 
 
 def parse_focus_prefixes(text: str) -> list[str]:
-    """Extract path prefixes from notes like 'focus on src/' or 'only tests/'."""
+    """Extract path prefixes from notes like 'focus on src/' or 'only tests/'.
+
+    Only directory-looking tokens count. Plan descriptions are LLM English
+    prose, so a bare word after "in"/"only" ("review the files in manifest")
+    must not become a prefix — that silently filtered the inventory down to
+    nothing.
+    """
     found: list[str] = []
     for m in _FOCUS_RE.finditer(text or ""):
         prefix = (m.group(1) or "").strip().lstrip("./")
-        if not prefix:
+        if not prefix or "/" not in prefix:
             continue
         if not prefix.endswith("/") and "." not in Path(prefix).name:
             prefix = prefix + "/"
@@ -167,7 +173,12 @@ def build_manifest(
     for p in parse_focus_prefixes(focus_hint):
         if p not in prefixes:
             prefixes.append(p)
-    return collect_manifest_paths(memory.root, focus_prefixes=prefixes or None)
+    paths = collect_manifest_paths(memory.root, focus_prefixes=prefixes or None)
+    if prefixes and not paths:
+        # Fail open: a focus hint that matches nothing must not yield an empty
+        # inventory (review would then have no files to look at).
+        paths = collect_manifest_paths(memory.root)
+    return paths
 
 
 def write_manifest(

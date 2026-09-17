@@ -69,3 +69,13 @@ def test_coding_hook_marks_done(tmp_path: Path) -> None:
     assert result["tool"] == "review"
     assert result["status"] == "ok"
     assert "### `a.py`" in mem.read_prototype("review.md")
+
+
+def test_review_never_empties_itself_on_a_prose_hint(tmp_path: Path) -> None:
+    """Regression: a todo description mentioning "manifest" emptied the review."""
+    mem = _memory(tmp_path)
+    (tmp_path / "a.py").write_text("x = 1\n", encoding="utf-8")
+    write_manifest(mem)
+    path, reviews = write_review(mem, focus_hint="review every file in manifest")
+    assert [r.path for r in reviews] == ["a.py"]
+    assert "### `a.py`" in mem.read_prototype(path)
