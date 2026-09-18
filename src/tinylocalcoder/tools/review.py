@@ -56,6 +56,87 @@ class FileReview:
         return min(self.findings, key=lambda f: _SEVERITY_ORDER[f.severity]).severity
 
 
+@dataclass
+class ReviewIssue:
+    """One actionable line from ``review.md`` (or a live heuristic scan)."""
+
+    path: str
+    severity: Severity
+    message: str
+    line: int | None = None
+
+    def format_plan_line(self) -> str:
+        loc = f" L{self.line}" if self.line else ""
+        return f"- `{self.path}`{loc} [{self.severity}]: {self.message}"
+
+
+_FILE_HEAD_RE = re.compile(r"^###\s+`([^`]+)`\s*$")
+_FINDING_LINE_RE = re.compile(
+    r"^-\s+\*\*(high|medium|low|info)\*\*(?:\s+\(L(\d+)\))?:\s+(.+)$",
+    re.IGNORECASE,
+)
+
+
+def parse_review_issues(text: str) -> list[ReviewIssue]:
+    """Parse findings from a tool-written (or similarly shaped) review.md."""
+    issues: list[ReviewIssue] = []
+    path = ""
+    for raw in (text or "").splitlines():
+        line = raw.strip()
+        head = _FILE_HEAD_RE.match(line)
+        if head:
+            path = head.group(1).strip()
+            continue
+        hit = _FINDING_LINE_RE.match(line)
+        if not hit or not path:
+            continue
+        sev = hit.group(1).lower()
+        if sev not in _SEVERITY_ORDER:
+            continue
+        lineno = int(hit.group(2)) if hit.group(2) else None
+        issues.append(
+            ReviewIssue(path=path, severity=sev, message=hit.group(3).strip(), line=lineno)
+        )
+    return issues
+
+
+def actionable_issues(issues: list[ReviewIssue]) -> list[ReviewIssue]:
+    """Drop info-only notes that are not worth a fix todo."""
+    return [i for i in issues if i.severity in {"high", "medium", "low"}]
+
+
+def format_issues_for_plan(issues: list[ReviewIssue]) -> str:
+    if not issues:
+        return "(no actionable findings)"
+    return "\n".join(i.format_plan_line() for i in issues)
+
+
+def issues_from_review(memory: WorkspaceMemory) -> list[ReviewIssue]:
+    """Load issues from review.md; live-scan only when that file is empty."""
+    text = ""
+    if memory.prototype_exists(REVIEW_NAME):
+        text = memory.read_prototype(REVIEW_NAME)
+    parsed = parse_review_issues(text)
+    if parsed:
+        return actionable_issues(parsed)
+    if text.strip():
+        return []
+    live: list[ReviewIssue] = []
+    for rev in build_reviews(memory):
+        for finding in rev.findings:
+            if finding.severity == "info":
+                continue
+            live.append(
+                ReviewIssue(
+                    path=rev.path,
+                    severity=finding.severity,
+                    message=finding.message,
+                    line=finding.line,
+                )
+            )
+    return live
+
+
 def is_review_todo(todo: TodoStep) -> bool:
     """True when a create/refine todo targets ``review.md``."""
     if todo.action not in {"create", "write", "refine"}:
@@ -342,8 +423,11 @@ def render_review_md(reviews: list[FileReview], *, manifest_count: int) -> str:
         if r.summary:
             lines.append(f"_{r.summary}_")
             lines.append("")
-        for f in sorted(r.findings, key=lambda x: _SEVERITY_ORDER[x.severity]):
-            lines.append(f.format())
+        if r.findings:
+            for f in sorted(r.findings, key=lambda x: _SEVERITY_ORDER[x.severity]):
+                lines.append(f.format())
+        else:
+            lines.append("- **info**: No heuristic issues flagged.")
         lines.append("")
 
     lines.append("---")

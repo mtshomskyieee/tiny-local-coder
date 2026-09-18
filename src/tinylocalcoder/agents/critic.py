@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from langchain_core.messages import HumanMessage, SystemMessage
 
-from tinylocalcoder.llm import invoke_llm
+from tinylocalcoder.llm import invoke_llm, message_text
 from tinylocalcoder.memory.files import WorkspaceMemory
 
 
@@ -101,7 +101,7 @@ def run_critic(
         ),
     ]
     result = invoke_llm(messages)
-    text = (result.content if isinstance(result.content, str) else str(result.content)).strip()
+    text = message_text(result)
     # Guard: if todos remain, refuse a false "all complete" DONE from the model.
     if pending > 0 and text.upper().startswith("DONE") and "all" in text.lower() and (
         "complete" in text.lower() or "finished" in text.lower()

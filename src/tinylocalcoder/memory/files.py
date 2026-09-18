@@ -66,6 +66,7 @@ META_TODO_NAMES = frozenset(
         "reset-all-skipped",
         "reset-skipped",
         "review",
+        "review-fix",
         "test",
         "procs",
         "processes",

@@ -39,6 +39,7 @@ def _todo(action: str, target: str, desc: str = "", *, done: bool = False,
 def test_meta_command_name_accepts_slash_and_bare() -> None:
     assert meta_command_name("/reset-todo 8") == "reset-todo"
     assert meta_command_name("REVIEW") == "review"
+    assert meta_command_name("/review-fix") == "review-fix"
     assert meta_command_name("") is None
     assert meta_command_name("create a fastapi service") is None
 

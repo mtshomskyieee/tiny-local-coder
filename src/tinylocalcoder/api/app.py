@@ -185,6 +185,10 @@ def create_app(session: ApiSession | None = None) -> FastAPI:
     def review(body: PromptRequest) -> RunResponse:
         return _run_mode("review", body, workflow="review")
 
+    @app.post("/v1/review-fix", response_model=RunResponse)
+    def review_fix(body: PromptRequest) -> RunResponse:
+        return _run_mode("review-fix", body, workflow="review-fix")
+
     @app.post("/v1/test", response_model=RunResponse)
     def test_workflow(body: PromptRequest) -> RunResponse:
         return _run_mode("test", body, workflow="test")

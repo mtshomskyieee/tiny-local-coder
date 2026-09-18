@@ -6,7 +6,7 @@ import re
 
 from langchain_core.messages import HumanMessage, SystemMessage
 
-from tinylocalcoder.llm import invoke_llm
+from tinylocalcoder.llm import invoke_llm, message_text
 from tinylocalcoder.memory.files import TodoStep, WorkspaceMemory
 from tinylocalcoder.tools.manifest import fulfill_manifest_todo, is_manifest_todo
 from tinylocalcoder.tools.review import fulfill_review_todo, is_review_todo
@@ -149,9 +149,7 @@ def _write_one_file(
             ),
         ]
     result = invoke_llm(messages)
-    content = _strip_fences(
-        result.content if isinstance(result.content, str) else str(result.content)
-    )
+    content = _strip_fences(message_text(result))
     memory.write_prototype(path, content.rstrip() + "\n")
     return path
 

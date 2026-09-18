@@ -100,17 +100,47 @@ Optional focus:
 
 **What happens**
 
-1. Fixed review prompt drives `/plan` (expect todos for `manifest.txt` and `review.md`).
-2. A **tool** writes `manifest.txt` (filesystem walk — no LLM inventory).
-3. A **tool** writes `review.md` (walks each manifest path; opinionated heuristic findings).
-4. Immediately runs `/execute-plan` on any remaining todos (usually none for coding).
+The TUI prints each stage as `review » N/4 …` so you can see where the workflow is.
+
+1. **1/4** — a **tool** writes `manifest.txt` (filesystem walk — no LLM inventory). The TUI prints the file.
+2. **2/4** — `/plan` runs with that inventory in the prompt (todos for `review.md`, not invented paths).
+3. **3/4** — a **tool** reviews **each** manifest path and always writes `review.md` (does not depend on how the LLM worded the todos). The TUI prints the file.
+4. **4/4** — `/execute-plan` runs any remaining todos; if execute wipes `review.md`, the tool restores it.
 5. Artifacts: `workspace/manifest.txt`, `workspace/review.md`.
 
-Inspect with `/show-plan` or `/code show review.md`. After `/review`, the TUI prints `review.md` automatically.
+Inspect with `/show-plan` or `/code show review.md`. Typical next step: `/review-fix`.
 
 ---
 
-## 4. Testing the code
+## 4. Fixing from a review
+
+**Goal:** Turn `review.md` findings into a fix plan and execute it — without manually `/plan` then `/execute-plan`.
+
+**CLI**
+
+```text
+/review-fix
+```
+
+Optional focus:
+
+```text
+/review-fix only high
+```
+
+**What happens**
+
+The TUI prints each stage as `review-fix » N/3 …`.
+
+1. **1/3** — load `review.md` (write it from the manifest if missing/empty). High/medium/low findings are listed; info-only notes are skipped. The TUI prints `review.md`.
+2. **2/3** — `/plan` writes refine/fix todos from those findings into `plan.md`. The TUI prints the plan.
+3. **3/3** — `/execute-plan` runs that plan. If nothing is actionable, execute does not run (leftover todos from an earlier plan are left alone).
+
+Inspect with `/show-plan`. After `/review-fix`, the TUI prints the findings and `plan.md` again.
+
+---
+
+## 5. Testing the code
 
 **Goal:** Build a **runnable test plan** as `plan.md` and execute it in one command.
 

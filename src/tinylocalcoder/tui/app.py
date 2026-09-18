@@ -30,7 +30,7 @@ _MODE_ALIASES = {
     "run-plan": "execute",
 }
 
-_WORKFLOW_COMMANDS = frozenset({"review", "test"})
+_WORKFLOW_COMMANDS = frozenset({"review", "test", "review-fix"})
 
 _META_COMMANDS = set(META_TODO_NAMES) | {
     "help",
@@ -62,6 +62,7 @@ _META_COMMANDS = set(META_TODO_NAMES) | {
     "reset-all-skipped",
     "reset-skipped",
     "review",
+    "review-fix",
     "test",
     "procs",
     "processes",
@@ -73,7 +74,7 @@ _META_COMMANDS = set(META_TODO_NAMES) | {
 # Mode words that are also meta when used as /commands, but must NOT steal
 # freeform plan prompts like "plan a flask app" when typed without /.
 _META_ONLY_WITH_SLASH = frozenset(
-    {"plan", "code", "ask", "execute", "fix", "reset", "review", "test"}
+    {"plan", "code", "ask", "execute", "fix", "reset", "review", "review-fix", "test"}
 )
 
 
@@ -123,6 +124,10 @@ def _thinking_body(message: str) -> str:
 def _thinking_for_mode(mode: str, prompt: str, memory) -> str:
     """Build a short status line for the thinking bar before work starts."""
     prompt = (prompt or "").strip()
+    if mode == "review":
+        return "thinking … review: 1/4 writing manifest.txt"
+    if mode == "review-fix":
+        return "thinking … review-fix: 1/3 loading review.md"
     if mode in _WORKFLOW_COMMANDS:
         return f"thinking … {mode}: planning"
     if mode == "plan":
@@ -202,7 +207,8 @@ class PromptInput(Input):
 
 _HELP = """[b]Commands[/b]
   [cyan]/plan[/] [green]/code[/] [yellow]/execute[/] (/execute-plan) [magenta]/ask[/]
-  [blue]/review[/]      — plan manifest.txt + review.md comments, then execute
+  [blue]/review[/]      — inventory → per-file notes in review.md (shown in the log)
+  [blue]/review-fix[/]  — plan fixes from review.md, then execute that plan
   [blue]/test[/]        — plan a runnable test plan, then execute it
   [red]/fix[/]         — read last error + files/dirs, apply LLM/heuristic repairs
   [b]/procs[/]         — list PIDs tracked from /execute (ports, status)
@@ -304,6 +310,19 @@ class TinyLocalCoderTui(App[None]):
     def _on_pipeline_progress(self, message: str) -> None:
         """Update thinking bar from a worker thread during pipeline steps."""
         self.call_from_thread(self._show_thinking, message)
+        if message.startswith("review »") or message.startswith("review-fix »"):
+            self.call_from_thread(self._append_log, f"[blue]{message}[/]")
+        if message.startswith("review » manifest.txt ready"):
+            self.call_from_thread(self._show_manifest)
+        if message.startswith("review » review.md saved"):
+            self.call_from_thread(self._show_review_md)
+        if message.startswith("review-fix » review.md ready"):
+            self.call_from_thread(self._show_review_md)
+        if message.startswith("review-fix » plan.md ready"):
+            self.call_from_thread(self._show_current_plan)
+
+    def _append_log(self, markup: str) -> None:
+        self.query_one("#log", RichLog).write(markup)
 
     def compose(self) -> ComposeResult:
         yield Header()
@@ -338,7 +357,7 @@ class TinyLocalCoderTui(App[None]):
         log.write(
             "Modes: [cyan]/plan[/] [green]/code[/] "
             "[yellow]/execute-plan[/] [red]/fix[/] [magenta]/ask[/]  ·  "
-            "flows: [blue]/review /test[/]  ·  "
+            "flows: [blue]/review /review-fix /test[/]  ·  "
             "plan: [b]/show-plan /plan-edit /clear-plan /archive /clear-workspace[/b]  ·  "
             "meta: [b]/auto-fix /auto-skip /skip-todo /reset-todo "
             "/reset-all-skipped /clear /model /usage /help /quit[/b]"
@@ -416,20 +435,43 @@ class TinyLocalCoderTui(App[None]):
             text = text[:6000] + "\n…[truncated]"
         log.write(text)
 
+    def _ensure_review_md(self) -> str:
+        """Write review.md from the manifest if it is missing or blank."""
+        from tinylocalcoder.tools.review import write_review
+
+        memory = self.pipeline.memory
+        body = memory.read_prototype("review.md").strip()
+        if body:
+            return body
+        write_review(memory)
+        return memory.read_prototype("review.md").strip()
+
+    def _show_manifest(self, text: str = "") -> None:
+        from rich.markup import escape
+
+        log = self.query_one("#log", RichLog)
+        body = (text or self.pipeline.memory.read_prototype("manifest.txt")).strip()
+        log.write("[b cyan]manifest.txt[/]")
+        if not body:
+            log.write("[dim](no source files inventoried)[/]")
+            return
+        log.write(escape(body))
+
     def _show_review_md(self, text: str | None = None) -> None:
         """Display review.md in the log (review workflow deliverable)."""
         from rich.markup import escape
 
         log = self.query_one("#log", RichLog)
-        body = (text if text is not None else self.pipeline.memory.read_prototype("review.md")).strip()
+        if text is None:
+            body = self._ensure_review_md()
+        else:
+            body = text.strip() or self._ensure_review_md()
         if not body:
-            log.write("[yellow]review.md[/] is empty.")
+            log.write("[yellow]review.md[/] is empty — no source files to review.")
             return
         log.write("[b green]review.md[/]")
-        # Reviews are the point of /review — allow a larger display than generic output
         if len(body) > 12000:
             body = body[:12000] + "\n…[truncated]"
-        # Escape so findings like `keys() or [0]` don't break Rich markup
         log.write(escape(body))
 
     def _handle_meta(self, cmd: str, rest: str = "") -> bool:
@@ -443,7 +485,8 @@ class TinyLocalCoderTui(App[None]):
                 log.write("[dim]Still thinking ... please wait (or /quit).[/dim]")
                 return True
             label = {
-                "review": "plan manifest.txt + review.md, then execute",
+                "review": "write manifest.txt, plan from it, write review.md, then execute",
+                "review-fix": "plan fixes from review.md, then execute",
                 "test": "plan a runnable test plan, then execute",
             }[cmd]
             log.write(f"[blue]/{cmd}[/] — {label}")
@@ -759,9 +802,20 @@ class TinyLocalCoderTui(App[None]):
         self.mode = kind
         self._refresh_status()
         log = self.query_one("#log", RichLog)
-        log.write(
-            f"\n[b]→ /{kind}[/b] {prompt or '(plan → execute workflow)'}"
-        )
+        if kind == "review":
+            log.write(
+                f"\n[b]→ /review[/b] {prompt or ''}".rstrip()
+                + "\n[dim]workflow: inventory → plan → per-file review → save[/]"
+            )
+        elif kind == "review-fix":
+            log.write(
+                f"\n[b]→ /review-fix[/b] {prompt or ''}".rstrip()
+                + "\n[dim]workflow: load review.md → plan fixes → execute[/]"
+            )
+        else:
+            log.write(
+                f"\n[b]→ /{kind}[/b] {prompt or '(plan → execute workflow)'}"
+            )
         self._show_thinking(_thinking_for_mode(kind, prompt, self.pipeline.memory))
         self.run_pipeline(kind, prompt, workflow=kind)
 
@@ -903,15 +957,29 @@ class TinyLocalCoderTui(App[None]):
             if session_bits:
                 memory.append_session("assistant", "\n".join(session_bits))
 
-            # /review: show the written review.md as the primary result
+            # /review: show steps, manifest, then the written review.md
             if (workflow or result.get("workflow")) == "review":
+                log.write("[b]/review[/] — inventory → plan → per-file review → save")
+                self._show_manifest(str(result.get("manifest_text") or ""))
                 review_body = str(result.get("review_markdown") or "").strip()
-                if not review_body and memory.prototype_exists("review.md"):
-                    review_body = memory.read_prototype("review.md").strip()
-                self._show_review_md(review_body)
-                log.write("[green]file:[/green] review.md")
+                self._show_review_md(review_body or None)
+                log.write("[green]saved:[/green] manifest.txt  review.md")
                 self._refresh_status()
                 log.write("[b green]/review complete.[/]")
+                return
+
+            if (workflow or result.get("workflow")) == "review-fix":
+                log.write("[b]/review-fix[/] — load review.md → plan fixes → execute")
+                issues = str(result.get("issues_text") or "").strip()
+                if issues:
+                    log.write("[b cyan]findings[/]")
+                    log.write(issues)
+                self._show_current_plan()
+                if result.get("skipped_execute"):
+                    log.write("[dim]No fix todos to execute.[/]")
+                log.write("[green]saved:[/green] plan.md")
+                self._refresh_status()
+                log.write("[b green]/review-fix complete.[/]")
                 return
 
             if len(out) > 4000:

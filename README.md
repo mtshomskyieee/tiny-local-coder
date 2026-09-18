@@ -59,7 +59,7 @@ Choose **Allow** for this one command, **Deny** to skip and log it, or **Allow a
 
 **4. When something fails**, TLC tries to recover on its own: one code repair and retry, then — if the *todo itself* looks wrong — one rewrite of the remaining open todos, and failing that it marks the step `[!]` and moves on. Reopen skipped steps with `/reset-todo N` and run `/execute-plan` again.
 
-Full walkthroughs for fixing, reviewing and testing are in **[docs/use-cases.md](docs/use-cases.md)**.
+Full walkthroughs for fixing, reviewing, applying review fixes, and testing are in **[docs/use-cases.md](docs/use-cases.md)**.
 
 ## Modes
 
@@ -70,7 +70,8 @@ Full walkthroughs for fixing, reviewing and testing are in **[docs/use-cases.md]
 | `/execute-plan` | Walk todos one-by-one; each LLM call sees **only the current step** |
 | `/ask` | Q&A written to `workspace/ask.md` |
 | `/fix` | Code-only repair of the last failure |
-| `/review` | Tool-built `manifest.txt` + opinionated `review.md`, then `/execute-plan` |
+| `/review` | Tool-built `manifest.txt`, per-file notes in `review.md` (shown live), then `/execute-plan` |
+| `/review-fix` | Plan refine/fix todos from `review.md` findings, then `/execute-plan` |
 | `/test` | Plan a runnable test plan into `plan.md`, then run `/execute-plan` |
 
 **Default plan shape (enforced after `/plan`):** a few `create`/`refine` steps → **one** batched `py_compile` → **one** short `python3 -c` smoke check. Prefer ≤8 todos. Meta commands (`reset-todo`, …) are stripped if they leak into the plan.
@@ -189,6 +190,7 @@ See `.env.example` for the other knobs:
 - `POST /v1/execute/approve` `{ "command_id": "...", "decision": "allow" }`
 - `POST /v1/ask` `{ "prompt": "..." }`
 - `POST /v1/review` `{ "prompt": "..." }` — plan then execute review workflow
+- `POST /v1/review-fix` `{ "prompt": "..." }` — plan then execute fixes from review.md
 - `POST /v1/test` `{ "prompt": "..." }` — plan then execute test workflow
 - `GET /v1/workspace/files`
 - `GET /v1/workspace/file?path=plan.md`

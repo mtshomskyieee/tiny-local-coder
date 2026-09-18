@@ -8,8 +8,10 @@ from tinylocalcoder.config import Settings
 from tinylocalcoder.memory.files import TodoStep, WorkspaceMemory
 from tinylocalcoder.tools.manifest import write_manifest
 from tinylocalcoder.tools.review import (
+    actionable_issues,
     fulfill_review_todo,
     is_review_todo,
+    parse_review_issues,
     write_review,
 )
 
@@ -79,3 +81,22 @@ def test_review_never_empties_itself_on_a_prose_hint(tmp_path: Path) -> None:
     path, reviews = write_review(mem, focus_hint="review every file in manifest")
     assert [r.path for r in reviews] == ["a.py"]
     assert "### `a.py`" in mem.read_prototype(path)
+
+
+def test_parse_review_issues_skips_info(tmp_path: Path) -> None:
+    text = (
+        "# Code review\n\n"
+        "### `src/db.py`\n\n"
+        "- **high** (L12): Bare `except:` swallows all errors.\n"
+        "- **low**: Debug `print` left in source.\n"
+        "### `src/__init__.py`\n\n"
+        "- **info**: No heuristic issues flagged — still skim for API/contract fit.\n"
+    )
+    parsed = parse_review_issues(text)
+    assert [(i.path, i.severity, i.line) for i in parsed] == [
+        ("src/db.py", "high", 12),
+        ("src/db.py", "low", None),
+        ("src/__init__.py", "info", None),
+    ]
+    action = actionable_issues(parsed)
+    assert [i.path for i in action] == ["src/db.py", "src/db.py"]

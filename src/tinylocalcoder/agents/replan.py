@@ -7,7 +7,7 @@ from pathlib import Path
 
 from langchain_core.messages import HumanMessage, SystemMessage
 
-from tinylocalcoder.llm import invoke_llm
+from tinylocalcoder.llm import invoke_llm, message_text
 from tinylocalcoder.memory.files import (
     REPLAN_OPEN_CAP,
     TodoStep,
@@ -284,7 +284,7 @@ def _llm_open_todos(
         ),
     ]
     result = invoke_llm(messages)
-    text = result.content if isinstance(result.content, str) else str(result.content)
+    text = message_text(result)
     todos = _parse_open_todo_lines(text)
     if not todos or _looks_like_spam(text, todos):
         return None

@@ -7,7 +7,7 @@ from pathlib import Path
 
 from langchain_core.messages import HumanMessage, SystemMessage
 
-from tinylocalcoder.llm import invoke_llm
+from tinylocalcoder.llm import invoke_llm, message_text
 from tinylocalcoder.memory.files import WorkspaceMemory
 
 
@@ -504,7 +504,7 @@ def run_fix_agent(
         ),
     ]
     result = invoke_llm(messages)
-    raw = result.content if isinstance(result.content, str) else str(result.content)
+    raw = message_text(result)
     needs_replan = parse_needs_replan(raw)
     llm_fixes: list[str] = []
     if not needs_replan:

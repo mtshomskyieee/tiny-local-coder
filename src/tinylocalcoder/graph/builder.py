@@ -523,7 +523,7 @@ class Pipeline:
         return result
 
     def invoke_workflow(
-        self, kind: Literal["review", "test"], prompt: str = "", **extra: Any
+        self, kind: Literal["review", "test", "review-fix"], prompt: str = "", **extra: Any
     ) -> dict[str, Any]:
         """Convenience: /plan with a fixed workflow prompt, then /execute-plan."""
         from tinylocalcoder.agents.workflows import run_workflow

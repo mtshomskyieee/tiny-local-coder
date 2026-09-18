@@ -39,6 +39,8 @@ services:
     volumes:
       - ./workspace:/workspace
       - ./config.toml:/app/config.toml:ro
+      # Live package so /review and other host edits apply without --build
+      - ./src/tinylocalcoder:/app/src/tinylocalcoder:ro
     ports:
       - "8000:8000"
     stdin_open: true
