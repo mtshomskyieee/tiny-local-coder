@@ -20,7 +20,14 @@ if [[ ! -f .env && -f .env.example ]]; then
   echo "Created .env from .env.example"
 fi
 
-# Ensure the named Ollama model volume exists (preserves qwen2.5:3b across restarts).
+# shellcheck source=scripts/compose-env.sh
+source "$ROOT/scripts/compose-env.sh"
+echo "Model: $TLC_MODEL_KEY → $MODEL_NAME (num_ctx=$NUM_CTX)"
+
+# shellcheck source=scripts/ensure-ollama-model.sh
+source "$ROOT/scripts/ensure-ollama-model.sh"
+
+# Ensure the named Ollama model volume exists (preserves pulls across restarts).
 VOLUME_NAME="crew_pipeline_ollama_data"
 if ! docker volume inspect "$VOLUME_NAME" >/dev/null 2>&1; then
   echo "Creating Docker volume $VOLUME_NAME"
@@ -50,8 +57,12 @@ if [[ "$BUILD" -eq 1 ]]; then
   "${COMPOSE[@]}" build
 fi
 
+echo "Starting Ollama…"
+"${COMPOSE[@]}" up -d ollama
+tlc_ensure_ollama_model
+
 if [[ "$DETACH" -eq 1 ]]; then
-  "${COMPOSE[@]}" up -d
+  "${COMPOSE[@]}" up -d --force-recreate --no-deps app
   echo
   "${COMPOSE[@]}" ps
   echo
@@ -60,5 +71,5 @@ if [[ "$DETACH" -eq 1 ]]; then
   echo "TUI:    ./cli.sh"
   echo "Stop:   ./stop-service.sh"
 else
-  "${COMPOSE[@]}" up
+  "${COMPOSE[@]}" up --force-recreate --no-deps app
 fi

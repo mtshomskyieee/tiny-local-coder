@@ -5,15 +5,18 @@ from __future__ import annotations
 from functools import lru_cache
 from pathlib import Path
 
+from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+from tinylocalcoder.model_config import load_model_choice
 
 
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 
     ollama_base_url: str = "http://127.0.0.1:11434"
-    model_name: str = "qwen2.5:3b"
-    num_ctx: int = 2048
+    model_name: str = Field(default_factory=lambda: load_model_choice().ollama)
+    num_ctx: int = Field(default_factory=lambda: load_model_choice().num_ctx)
     thinking_enabled: bool = True
     auto_fix: bool = True
     auto_fix_max: int = 1

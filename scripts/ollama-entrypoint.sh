@@ -16,13 +16,13 @@ while [ "$i" -lt 60 ]; do
   sleep 1
 done
 
-MODEL="${MODEL_NAME:-qwen2.5:3b}"
+MODEL="${MODEL_NAME:-qwen2.5:3b}"  # from config.toml via compose
 echo "Ensuring model ${MODEL} is available..."
-if ollama list 2>/dev/null | awk 'NR>1 {print $1}' | grep -qx "${MODEL}"; then
+if ollama show "${MODEL}" >/dev/null 2>&1; then
   echo "Model ${MODEL} already present — skip pull."
 elif ! ollama pull "${MODEL}"; then
   echo "WARN: ollama pull ${MODEL} failed (network/DNS?)."
-  if ollama list 2>/dev/null | awk 'NR>1 {print $1}' | grep -qx "${MODEL}"; then
+  if ollama show "${MODEL}" >/dev/null 2>&1; then
     echo "Model ${MODEL} is still listed locally — continuing."
   else
     echo "ERROR: model ${MODEL} is not available. Fix network and restart ollama."

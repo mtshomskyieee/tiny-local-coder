@@ -15,6 +15,7 @@ from tinylocalcoder.config import get_settings
 from tinylocalcoder.exec.gate import ApprovalGate, Decision, PendingCommand
 from tinylocalcoder.graph.builder import build_pipeline
 from tinylocalcoder.memory.files import META_TODO_NAMES, meta_command_name
+from tinylocalcoder.model_config import iter_models, load_model_choice
 from tinylocalcoder.tui.screens import ApprovalScreen, PlanEditScreen
 from tinylocalcoder.usage import get_usage_tracker
 
@@ -225,7 +226,7 @@ _HELP = """[b]Commands[/b]
   [b]/clear-workspace[/] — move everything (except archive/) into archive/<timestamp>, blank plan/ask
   [b]/plan show|clear|archive|edit[/] — same as above
   [b]/clear[/] (/new)  — reset ask/exec session logs (keeps plan + code)
-  [b]/model[/]         — show current model + how to change it
+  [b]/model[/]         — show current model + how to change it (config.toml)
   [b]/usage[/]         — token usage (session + lifetime; no $ cost)
   [b]/help[/]          — this list
   [b]/quit[/] (/exit)  — leave the TUI
@@ -550,13 +551,18 @@ class TinyLocalCoderTui(App[None]):
             self._refresh_status()
             return True
         if cmd == "model":
-            model = self.settings.model_name
-            log.write(f"[b]Current model:[/b] {model}")
+            choice = load_model_choice()
             log.write(
-                "To change it, set the environment variable and restart the suite:"
+                f"[b]Current model:[/b] {choice.key} → {self.settings.model_name}"
             )
-            log.write("  [cyan]MODEL_NAME=qwen2.5:1.5b ./start-service.sh[/]")
-            log.write("  or edit [cyan].env[/] → [cyan]MODEL_NAME=...[/] then restart")
+            log.write("Edit [cyan]config.toml[/] then restart the suite:")
+            log.write('  [cyan]model = "qwen3.5"[/]   # or "qwen2.5"')
+            log.write("  then [cyan]./start-service.sh[/]")
+            log.write("[b]Catalog:[/b]")
+            for spec in iter_models():
+                mark = " [green](active)[/]" if spec.key == choice.key else ""
+                log.write(f"  {spec.key}: {spec.ollama}{mark}")
+                log.write(f"    {spec.url}")
             log.write(f"  Ollama base URL: {self.settings.ollama_base_url}")
             return True
         if cmd == "usage":
@@ -874,8 +880,11 @@ class TinyLocalCoderTui(App[None]):
 
             def fail() -> None:
                 self._clear_thinking()
-                log.write(f"[red]Error: {exc}[/red]")
-                memory.append_session("assistant", f"Error: {exc}")
+                text = str(exc).strip() or "unknown error"
+                log.write("[red]Error:[/red]")
+                for line in text.splitlines() or [text]:
+                    log.write(f"[red]{line}[/red]")
+                memory.append_session("assistant", f"Error: {text}")
                 self._refresh_status()
 
             self.call_from_thread(fail)

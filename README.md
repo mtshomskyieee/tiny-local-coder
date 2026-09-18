@@ -13,17 +13,18 @@
 
 ## Requirements
 
-- Docker + Docker Compose
-- ~12 GB RAM (CPU-only is fine)
+- Docker + Docker Compose (on a Mac: `./colima-start-stop-on-mac.sh`)
+- ~12 GB RAM for the Docker VM (CPU-only is fine). Default Colima is 2 GB — too small for `qwen3.5:4b`.
 - No GPU
 
 ## Quick start
 
 ```bash
 cp .env.example .env   # once
-./start-service.sh     # rebuild app image, then start Ollama + API
-./start-service.sh --no-build   # start without rebuilding
-./stop-service.sh      # stop the suite (use this instead of bare docker compose down)
+./start-service.sh              # prompts each time; Return keeps the saved default
+./start-service.sh --model qwen3.5
+./start-service.sh --no-prompt  # skip the picker (scripts / CI)
+./stop-service.sh               # stop the suite (use this instead of bare docker compose down)
 ```
 
 The API listens on `http://localhost:8000`. Launch the interactive TUI with:
@@ -33,7 +34,7 @@ The API listens on `http://localhost:8000`. Launch the interactive TUI with:
 # equivalent: docker compose run --rm -it app tui
 ```
 
-First boot pulls `qwen2.5:3b` into the Ollama volume — slow, but only once. The model volume is `crew_pipeline_ollama_data` and survives `./stop-service.sh`.
+`./start-service.sh` checks whether the selected model is installed and pulls it if needed (`qwen2.5` → [`qwen2.5:3b`](https://ollama.com/library/qwen2.5:3b), `qwen3.5` → [`qwen3.5:4b`](https://ollama.com/library/qwen3.5:4b)). The first pull is slow; weights stay in `crew_pipeline_ollama_data` across `./stop-service.sh`.
 
 ## How-to: your first plan
 
@@ -88,7 +89,7 @@ After `/plan` finishes, the TUI prints a next-step hint. While agents work, a **
 | `/clear-plan` (`/plan clear`) | Reset `plan.md` to empty Goal/Todos (keeps code files) |
 | `/archive-plan` (`/plan archive`) | Save `plan.md` under `workspace/archives/` then clear |
 | `/clear` (`/new`) | Reset ask/exec session logs; keeps plan + code; resets session token counter |
-| `/model` | Show current model and how to set `MODEL_NAME` |
+| `/model` | Show current model and how to change it in `config.toml` |
 | `/usage` | Session + lifetime token counts (no $ cost) |
 | `/auto-fix on\|off` | Enable/disable automatic repair+retry on failed steps |
 | `/auto-skip on\|off` | Skip failed todos after fix and continue plan |
@@ -154,9 +155,24 @@ THINKING_ENABLED=false
 
 ## Configuration
 
-See `.env.example`. Important knobs:
+`./start-service.sh` asks for the model every time. The saved default is pre-selected — press Return to keep it, or pick another. The choice is written to `config.toml`.
 
-- `MODEL_NAME=qwen2.5:3b`
+```toml
+model = "qwen2.5"   # or "qwen3.5"
+```
+
+```bash
+./start-service.sh --model qwen3.5
+./start-service.sh --no-prompt
+```
+
+| Key | Pulls | Size | Source |
+|-----|--------|------|--------|
+| `qwen2.5` | `qwen2.5:3b` | ~2 GB | https://ollama.com/library/qwen2.5:3b |
+| `qwen3.5` | `qwen3.5:4b` | ~3.4 GB | https://ollama.com/library/qwen3.5:4b |
+
+See `.env.example` for the other knobs:
+
 - `NUM_CTX=2048` (raise to 4096 only if you have headroom)
 - `AUTO_FIX` / `AUTO_FIX_MAX` — one code repair+retry per failed run step
 - `AUTO_REPLAN` — one open-todo rewrite when the failing step looks like a bad plan
