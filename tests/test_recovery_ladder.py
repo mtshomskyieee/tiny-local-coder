@@ -96,6 +96,21 @@ def test_unrelated_error_applies_nothing(memory: WorkspaceMemory) -> None:
     assert apply_heuristic_fixes(memory, "SyntaxError: invalid syntax") == []
 
 
+def test_stub_start_script_is_rewritten_from_hint(memory: WorkspaceMemory) -> None:
+    memory.write_prototype("src/db.py", "from fastapi import FastAPI\napp = FastAPI()\n")
+    memory.write_prototype(
+        "start_service.sh",
+        "#!/usr/bin/env bash\nset -e\ncd \"$(dirname \"$0\")\"\n",
+    )
+    applied = apply_heuristic_fixes(
+        memory, "User note:\nstart_service.sh should execute src/db.py"
+    )
+    body = memory.read_prototype("start_service.sh")
+    assert "from src.db import app" in body
+    assert "uvicorn" not in body
+    assert any("start_service.sh" in note for note in applied)
+
+
 def test_port_conflict_falls_back_to_rewriting_the_port(memory: WorkspaceMemory) -> None:
     memory.write_prototype("src/main.py", "uvicorn.run(app, port=8000)\n")
     applied = apply_heuristic_fixes(

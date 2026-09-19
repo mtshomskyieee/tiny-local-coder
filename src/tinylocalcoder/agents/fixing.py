@@ -68,7 +68,12 @@ _IMPORT_NAME_RE = re.compile(
     re.IGNORECASE,
 )
 _PATH_HINT_RE = re.compile(
-    r"(?:^|[\s/`])((?:src|tests|prototypes)/[\w./-]+\.(?:py|md|sh|txt))",
+    r"(?:^|[\s/`])((?:src|tests|prototypes)/[\w./-]+\.(?:py|md|sh|txt)|"
+    r"[\w./-]*start[\w./-]*\.sh)",
+    re.IGNORECASE,
+)
+_START_SCRIPT_RE = re.compile(
+    r"\b((?:[\w./-]*/)?start[\w.-]*\.sh)\b",
     re.IGNORECASE,
 )
 _ACTION_RE = re.compile(
@@ -95,6 +100,10 @@ def extract_paths_from_error(text: str) -> list[str]:
         if p and p not in found:
             found.append(p)
     for m in _PATH_HINT_RE.finditer(text or ""):
+        p = _norm(m.group(1))
+        if p and p not in found:
+            found.append(p)
+    for m in _START_SCRIPT_RE.finditer(text or ""):
         p = _norm(m.group(1))
         if p and p not in found:
             found.append(p)
@@ -261,7 +270,55 @@ def apply_heuristic_fixes(memory: WorkspaceMemory, error_text: str) -> list[str]
                         memory.write_prototype(path, new)
                         applied.append(f"WRITE `{path}` (port 8000 → 8888)")
 
+    # Stub start_*.sh named in the failure/hint — write a bounded app check
+    # (must exit; do not leave uvicorn running).
+    start_paths = list(extract_paths_from_error(err))
+    if "start" in err.lower():
+        for rel in memory.list_files():
+            name = Path(rel).name.lower()
+            if name.endswith(".sh") and "start" in name and rel not in start_paths:
+                start_paths.append(rel)
+    for path in start_paths:
+        note = _fix_stub_start_script(memory, path)
+        if note:
+            applied.append(note)
+
     return applied
+
+
+def _fastapi_import_module(memory: WorkspaceMemory) -> str:
+    for rel, mod in (
+        ("src/db.py", "src.db"),
+        ("src/api.py", "src.api"),
+        ("src/main.py", "src.main"),
+        ("db.py", "db"),
+        ("main.py", "main"),
+    ):
+        if memory.prototype_exists(rel) and "FastAPI" in memory.read_prototype(rel):
+            return mod
+    return "src.db"
+
+
+def _fix_stub_start_script(memory: WorkspaceMemory, path: str) -> str | None:
+    """Fill a start_*.sh that does not actually launch/check the app."""
+    norm = _norm(path)
+    name = Path(norm).name.lower()
+    if not name.endswith(".sh") or "start" not in name:
+        return None
+    existing = memory.read_prototype(norm) if memory.prototype_exists(norm) else ""
+    if re.search(r"python|uvicorn|fastapi", existing, re.IGNORECASE):
+        return None
+    mod = _fastapi_import_module(memory)
+    body = (
+        "#!/usr/bin/env bash\n"
+        "set -euo pipefail\n"
+        'cd "$(dirname "$0")"\n'
+        'export PYTHONPATH="${PYTHONPATH:-.}"\n'
+        f'exec python3 -c "from {mod} import app; '
+        "print([getattr(r, 'path', None) for r in app.routes])\"\n"
+    )
+    memory.write_prototype(norm, body)
+    return f"WRITE `{norm}` (bounded `{mod}:app` check — prints routes, exits)"
 
 
 def _parse_and_apply_llm_actions(memory: WorkspaceMemory, text: str) -> list[str]:
