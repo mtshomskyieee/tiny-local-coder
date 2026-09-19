@@ -37,7 +37,7 @@ When the plan is ready:
 
 **Useful follow-ups**
 
-- `/plan-edit` — full-screen edit of `plan.md` (Save / Cancel · Ctrl+S / Esc)  
+- `/plan-edit` — full-screen edit of `plan.md` (Save applies standards; Undo if rewritten · Ctrl+S / Ctrl+U / Esc)  
 - `/code` — next create/refine todo only  
 - `/code show hello_world.py` — print a file  
 - `/clear-plan` — wipe todos but keep code  

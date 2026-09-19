@@ -87,7 +87,7 @@ After `/plan` finishes, the TUI prints a next-step hint. While agents work, a **
 |---------|------|
 | `/quit` (`/exit`) | Leave the TUI |
 | `/show-plan` (`/plan` or `/plan show`) | Print current `plan.md` |
-| `/plan-edit` (`/edit-plan`, `/plan edit`) | Full-screen edit of `plan.md` (Save / Cancel) |
+| `/plan-edit` (`/edit-plan`, `/plan edit`) | Full-screen edit of `plan.md` (Save applies standards; stay open to Undo if rewritten) |
 | `/clear-plan` (`/plan clear`) | Reset `plan.md` to empty Goal/Todos (keeps code files) |
 | `/archive-plan` (`/plan archive`) | Save `plan.md` under `workspace/archives/` then clear |
 | `/clear` (`/new`) | Reset ask/exec session logs; keeps plan + code; resets session token counter |

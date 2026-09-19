@@ -16,7 +16,7 @@ from tinylocalcoder.exec.gate import ApprovalGate, Decision, PendingCommand
 from tinylocalcoder.graph.builder import build_pipeline
 from tinylocalcoder.memory.files import META_TODO_NAMES, meta_command_name
 from tinylocalcoder.model_config import iter_models, load_model_choice
-from tinylocalcoder.tui.screens import ApprovalScreen, PlanEditScreen
+from tinylocalcoder.tui.screens import ApprovalScreen, PlanEditResult, PlanEditScreen
 from tinylocalcoder.usage import get_usage_tracker
 
 _MODE_ALIASES = {
@@ -231,7 +231,7 @@ _HELP = """[b]Commands[/b]
   [b]/code show path[/] — print a workspace file (e.g. /code show src/main.py)
   [b]/code update …[/] — edit a named file from your prompt (writes to disk)
   [b]/show-plan[/]     — print current plan.md
-  [b]/plan-edit[/]     — full-screen edit plan.md (Save / Cancel · Ctrl+S / Esc)
+  [b]/plan-edit[/]     — full-screen edit plan.md (Save applies standards; Undo if rewritten)
   [b]/clear-plan[/]    — reset plan.md to empty todos (code files kept)
   [b]/archive-plan[/]  — save plan.md under workspace/archives/ then clear
   [b]/archive name[/]  — copy entire workspace into workspace/archive/<name>
@@ -547,13 +547,21 @@ class TinyLocalCoderTui(App[None]):
                 return True
             initial = self.pipeline.memory.read_plan()
 
-            def on_edit_done(result: str | None) -> None:
+            def on_edit_done(result: PlanEditResult | None) -> None:
                 log = self.query_one("#log", RichLog)
                 if result is None:
                     log.write("[dim]/plan-edit[/] — cancelled; plan.md unchanged.")
+                elif result.skip_standards:
+                    self.pipeline.memory.save_plan_from_editor(result.text)
+                    log.write(
+                        "[green]/plan-edit[/] — saved plan.md "
+                        "(kept your text after undoing the automated fix)."
+                    )
+                    self._show_current_plan()
+                    self._refresh_status()
                 else:
-                    self.pipeline.memory.finalize_plan(result)
-                    log.write("[green]/plan-edit[/] — saved and normalized plan.md.")
+                    self.pipeline.memory.finalize_plan(result.text)
+                    log.write("[green]/plan-edit[/] — saved plan.md.")
                     self._show_current_plan()
                     self._refresh_status()
                 try:
@@ -561,7 +569,13 @@ class TinyLocalCoderTui(App[None]):
                 except Exception:  # noqa: BLE001
                     pass
 
-            self.push_screen(PlanEditScreen(initial), on_edit_done)
+            self.push_screen(
+                PlanEditScreen(
+                    initial,
+                    finalize=self.pipeline.memory.render_finalized_plan,
+                ),
+                on_edit_done,
+            )
             return True
         if cmd in {"clear-plan", "plan-clear"}:
             self.pipeline.memory.clear_plan()
