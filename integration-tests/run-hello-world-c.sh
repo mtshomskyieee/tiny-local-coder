@@ -61,26 +61,29 @@ else:
 }
 
 API_HTTP_CODE=0
+LAST_BODY=""
 
+# Do not wrap these in $(...); command substitution is a subshell and would
+# drop API_HTTP_CODE. Callers read LAST_BODY / API_HTTP_CODE after return.
 api_get() {
   local tmp
   tmp="$(mktemp)"
-  API_HTTP_CODE="$(curl -sS --max-time 30 -o "$tmp" -w '%{http_code}' "$1" || true)"
-  cat "$tmp"
+  API_HTTP_CODE="$(curl -sS --max-time 30 -o "$tmp" -w '%{http_code}' "$1" || printf '000')"
+  LAST_BODY="$(cat "$tmp")"
   rm -f "$tmp"
 }
 
 api_post() {
   local path="$1"
-  local body="$2"
+  local req="$2"
   local tmp
   tmp="$(mktemp)"
   API_HTTP_CODE="$(curl -sS --max-time 90 \
     -o "$tmp" -w '%{http_code}' \
     -H "Content-Type: application/json" \
-    -d "$body" \
-    "${API}${path}" || true)"
-  cat "$tmp"
+    -d "$req" \
+    "${API}${path}" || printf '000')"
+  LAST_BODY="$(cat "$tmp")"
   rm -f "$tmp"
 }
 
@@ -165,7 +168,9 @@ wait_healthy() {
   local body
   log "Waiting for $API/health (ollama ready, ${HEALTH_TIMEOUT_SEC}s)…"
   while ((SECONDS < deadline)); do
-    if body="$(api_get "$API/health" 2>/dev/null)"; then
+    api_get "$API/health"
+    body="$LAST_BODY"
+    if [[ "$API_HTTP_CODE" == "200" ]]; then
       if [[ "$(json_field "$body" "ollama" 2>/dev/null || true)" == "true" ]]; then
         pass "API health: ollama ready"
         return 0
@@ -202,13 +207,11 @@ wait_for_plan() {
   local deadline=$((SECONDS + PLAN_TIMEOUT_SEC))
   local body status
   log "Planning: $PLAN_PROMPT"
-  body="$(api_post "/v1/plan" "$(python3 -c '
+  api_post "/v1/plan" "$(python3 -c '
 import json, sys
 print(json.dumps({"prompt": sys.argv[1], "thinking_enabled": False}))
-' "$PLAN_PROMPT")")" || {
-    fail "POST /v1/plan failed"
-    return 1
-  }
+' "$PLAN_PROMPT")"
+  body="$LAST_BODY"
   if [[ "$API_HTTP_CODE" != "200" ]]; then
     fail "POST /v1/plan HTTP $API_HTTP_CODE: $body"
     return 1
@@ -241,7 +244,8 @@ print(json.dumps({"prompt": sys.argv[1], "thinking_enabled": False}))
       pass "plan.md is the canonical create-only plan"
       return 0
     fi
-    body="$(api_get "$API/v1/status" 2>/dev/null || true)"
+    api_get "$API/v1/status"
+    body="$LAST_BODY"
     status="$(json_field "$body" "status" 2>/dev/null || true)"
     sleep 2
   done
@@ -259,10 +263,8 @@ wait_for_execute() {
   local deadline=$((SECONDS + EXECUTE_TIMEOUT_SEC))
   local body status command_id last_id=""
   log "Executing plan…"
-  body="$(api_post "/v1/execute" '{"prompt":"","thinking_enabled":false}')" || {
-    fail "POST /v1/execute failed"
-    return 1
-  }
+  api_post "/v1/execute" '{"prompt":"","thinking_enabled":false}'
+  body="$LAST_BODY"
   if [[ "$API_HTTP_CODE" == "409" ]]; then
     fail "POST /v1/execute HTTP 409 (plan still running?): $body"
     return 1
@@ -282,22 +284,26 @@ wait_for_execute() {
         cmd="$(json_field "$body" "pending_approval.command" 2>/dev/null || true)"
         if echo "$cmd" | grep -Eqi 'gcc|clang|compile|\./hello-world'; then
           log "Denying compile/run gate: $cmd"
-          body="$(api_post "/v1/execute/approve" "$(python3 -c '
+          api_post "/v1/execute/approve" "$(python3 -c '
 import json, sys
 print(json.dumps({"command_id": sys.argv[1], "decision": "deny"}))
-' "$command_id")")" || {
-            fail "POST /v1/execute/approve (deny compile) failed"
+' "$command_id")"
+          body="$LAST_BODY"
+          if [[ "$API_HTTP_CODE" != "200" ]]; then
+            fail "POST /v1/execute/approve (deny compile) HTTP $API_HTTP_CODE"
             return 1
-          }
+          fi
         else
           log "Approving command $command_id (allow_all): $cmd"
-          body="$(api_post "/v1/execute/approve" "$(python3 -c '
+          api_post "/v1/execute/approve" "$(python3 -c '
 import json, sys
 print(json.dumps({"command_id": sys.argv[1], "decision": "allow_all"}))
-' "$command_id")")" || {
-            fail "POST /v1/execute/approve failed"
+' "$command_id")"
+          body="$LAST_BODY"
+          if [[ "$API_HTTP_CODE" != "200" ]]; then
+            fail "POST /v1/execute/approve HTTP $API_HTTP_CODE"
             return 1
-          }
+          fi
         fi
         last_id="$command_id"
         status="$(json_field "$body" "status" 2>/dev/null || true)"
@@ -311,7 +317,8 @@ print(json.dumps({"command_id": sys.argv[1], "decision": "allow_all"}))
     if run_finished "$status"; then
       break
     fi
-    body="$(api_get "$API/v1/status" 2>/dev/null || true)"
+    api_get "$API/v1/status"
+    body="$LAST_BODY"
     status="$(json_field "$body" "status" 2>/dev/null || true)"
     sleep 2
   done
@@ -336,10 +343,8 @@ print(json.dumps({"command_id": sys.argv[1], "decision": "allow_all"}))
 clear_workspace_via_api() {
   local body status archive
   log "POST /v1/workspace/clear (/clear-workspace)"
-  body="$(api_post "/v1/workspace/clear" '{}')" || {
-    fail "POST /v1/workspace/clear failed"
-    return 1
-  }
+  api_post "/v1/workspace/clear" '{}'
+  body="$LAST_BODY"
   if [[ "$API_HTTP_CODE" == "409" ]]; then
     fail "POST /v1/workspace/clear HTTP 409 (run still in progress): $body"
     return 1
