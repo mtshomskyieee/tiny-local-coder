@@ -13,19 +13,48 @@
 
 ## Requirements
 
-- Docker + Docker Compose (on a Mac: `./colima-start-stop-on-mac.sh`)
+- Docker + Docker Compose
 - ~12 GB RAM for the Docker VM (CPU-only is fine). Default Colima is 2 GB — too small for `qwen3.5:4b`.
 - No GPU
+
+## Docker on a Mac (Colima)
+
+Linux runs Docker natively. On a Mac you need a Linux VM. If that VM is [Colima](https://github.com/abiosoft/colima), size it **before** starting TLC:
+
+```bash
+brew install colima docker docker-compose   # once
+./colima-start-stop-on-mac.sh               # restart: stop suite + Colima, start 4 CPU / 12 GB / 60 GB
+./start-service.sh
+```
+
+```bash
+./colima-start-stop-on-mac.sh start     # size and start the VM
+./colima-start-stop-on-mac.sh stop      # stop TLC, then Colima
+./colima-start-stop-on-mac.sh status    # colima list + Docker RAM
+./colima-start-stop-on-mac.sh --memory 16 --cpu 6
+```
+
+Skip this script if you use Docker Desktop, OrbStack, or Linux/WSL2 — still give that VM about 12 GB RAM.
 
 ## Quick start
 
 ```bash
-cp .env.example .env   # once
-./start-service.sh              # prompts each time; Return keeps the saved default
+./start-service.sh              # creates .env if missing; prompts each time; Return keeps the saved default
 ./start-service.sh --model qwen3.5
 ./start-service.sh --no-prompt  # skip the picker (scripts / CI)
+./start-service.sh --build      # rebuild the app image
+./start-service.sh --foreground # attach to compose logs
 ./stop-service.sh               # stop the suite (use this instead of bare docker compose down)
 ```
+
+`./start-service.sh` then:
+
+1. Writes the chosen model to `config.toml`
+2. Starts Ollama and checks Docker RAM against the model's `min_ram_gb` (fails early if the VM is too small)
+3. Pulls the model if it is not already installed (`qwen2.5` → [`qwen2.5:3b`](https://ollama.com/library/qwen2.5:3b), `qwen3.5` → [`qwen3.5:4b`](https://ollama.com/library/qwen3.5:4b))
+4. Recreates the API container on `:8000`
+
+The first pull is slow; weights stay in `crew_pipeline_ollama_data` across `./stop-service.sh`.
 
 The API listens on `http://localhost:8000`. Launch the interactive TUI with:
 
@@ -33,8 +62,6 @@ The API listens on `http://localhost:8000`. Launch the interactive TUI with:
 ./cli.sh
 # equivalent: docker compose run --rm -it app tui
 ```
-
-`./start-service.sh` checks whether the selected model is installed and pulls it if needed (`qwen2.5` → [`qwen2.5:3b`](https://ollama.com/library/qwen2.5:3b), `qwen3.5` → [`qwen3.5:4b`](https://ollama.com/library/qwen3.5:4b)). The first pull is slow; weights stay in `crew_pipeline_ollama_data` across `./stop-service.sh`.
 
 ## How-to: your first plan
 
@@ -157,7 +184,7 @@ THINKING_ENABLED=false
 
 ## Configuration
 
-`./start-service.sh` asks for the model every time. The saved default is pre-selected — press Return to keep it, or pick another. The choice is written to `config.toml`.
+`./start-service.sh` asks for the model every time. The saved default is pre-selected — press Return to keep it, or pick another. The picker also shows each model's Docker RAM note from `config.toml`. The choice is written to `config.toml`.
 
 ```toml
 model = "qwen2.5"   # or "qwen3.5"
@@ -166,6 +193,8 @@ model = "qwen2.5"   # or "qwen3.5"
 ```bash
 ./start-service.sh --model qwen3.5
 ./start-service.sh --no-prompt
+./start-service.sh --build
+./start-service.sh --foreground
 ```
 
 | Key | Pulls | Size | Source |
