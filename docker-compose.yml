@@ -34,6 +34,7 @@ services:
       AUTO_FIX: ${AUTO_FIX:-true}
       AUTO_FIX_MAX: ${AUTO_FIX_MAX:-1}
       AUTO_SKIP: ${AUTO_SKIP:-true}
+      AUTO_REPLAN: ${AUTO_REPLAN:-true}
       WORKSPACE_DIR: /workspace
       EXEC_TIMEOUT_SEC: ${EXEC_TIMEOUT_SEC:-60}
     volumes:
