@@ -25,6 +25,7 @@ class ApiSession:
         self._result: dict[str, Any] | None = None
         self._error: str | None = None
         self._done = threading.Event()
+        self._last_mode: str = "plan"
 
     def _blocking_callback(self, pending: PendingCommand) -> Decision:
         # Park in gate maps so /approve can resume; wait for decision
@@ -56,6 +57,7 @@ class ApiSession:
             self._result = None
             self._error = None
             self._done.clear()
+            self._last_mode = mode
             self.gate.set_callback(self._blocking_callback)
 
             def target() -> None:
@@ -197,6 +199,10 @@ def create_app(session: ApiSession | None = None) -> FastAPI:
     def test_workflow(body: PromptRequest) -> RunResponse:
         return _run_mode("test", body, workflow="test")
 
+    @app.get("/v1/status", response_model=RunResponse)
+    def status() -> RunResponse:
+        return state.snapshot(state._last_mode)
+
     @app.post("/v1/execute/approve", response_model=RunResponse)
     def approve(body: ApproveRequest) -> RunResponse:
         ok = state.gate.approve(body.command_id, body.decision)
@@ -211,6 +217,16 @@ def create_app(session: ApiSession | None = None) -> FastAPI:
             if state._done.is_set():
                 return state.snapshot("execute")
         return state.snapshot("execute")
+
+    @app.post("/v1/workspace/clear")
+    def clear_workspace() -> dict[str, Any]:
+        """Same as TUI /clear-workspace: archive live files, blank plan/ask/session."""
+        try:
+            dest = state.pipeline.memory.clear_workspace()
+        except OSError as exc:
+            raise HTTPException(status_code=500, detail=str(exc)) from exc
+        rel = dest.relative_to(state.pipeline.memory.root)
+        return {"status": "ok", "archive": str(rel)}
 
     @app.get("/v1/workspace/files")
     def list_files() -> dict[str, Any]:
