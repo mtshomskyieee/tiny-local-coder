@@ -15,9 +15,11 @@ from tinylocalcoder.memory.files import (
     is_valid_run_command,
     looks_fastapi_goal,
     meta_command_name,
+    plan_text_equivalent,
     strip_placeholder_path,
     strip_placeholders_in_command,
 )
+from tinylocalcoder.tui.screens import plan_edit_needs_review
 
 
 def _todo(action: str, target: str, desc: str = "", *, done: bool = False,
@@ -39,6 +41,8 @@ def _todo(action: str, target: str, desc: str = "", *, done: bool = False,
 def test_meta_command_name_accepts_slash_and_bare() -> None:
     assert meta_command_name("/reset-todo 8") == "reset-todo"
     assert meta_command_name("REVIEW") == "review"
+    assert meta_command_name("/review-fix") == "review-fix"
+    assert meta_command_name("/fix-plan") == "fix-plan"
     assert meta_command_name("") is None
     assert meta_command_name("create a fastapi service") is None
 
@@ -157,6 +161,84 @@ def test_finalize_preserves_goal_done_and_extra_block(memory: WorkspaceMemory) -
     assert "Goal: build b.py" in final
     assert "Done: `b.py` (create), py_compile" in final
     assert "Notes: db.json lives beside b.py" in final
+
+
+def test_format_todo_board_includes_done_and_open(memory: WorkspaceMemory) -> None:
+    memory.write_plan(
+        "# Plan\nGoal: run tests\n\n## Todos\n"
+        "1. [x] create `tests/test_db.py` — smoke\n"
+        "2. [ ] run `python3 -m pytest tests/test_db.py -v` — expect success\n"
+        "3. [!] run `python3 -m py_compile app.py` — expect success\n"
+    )
+    board = memory.format_todo_board()
+    assert "Todos 1/3 (+1 skipped)" in board
+    assert "1. [x] create `tests/test_db.py` — smoke" in board
+    assert "2. [ ] run `python3 -m pytest tests/test_db.py -v`" in board
+    assert "3. [!] run `python3 -m py_compile app.py`" in board
+
+
+def test_save_plan_from_editor_keeps_hand_written_todos(
+    memory: WorkspaceMemory,
+) -> None:
+    """Undo-after-rewrite persist path must keep hand-written todos."""
+    edited = (
+        "# Plan\n"
+        "Goal: start the API from start_service.sh\n"
+        "\n"
+        "## Todos\n"
+        "1. [ ] refine `start_service.sh` — run python3 src/db.py\n"
+        "2. [ ] refine `src/db.py` — add update and delete routes\n"
+    )
+    saved = memory.save_plan_from_editor(edited)
+    assert "refine `start_service.sh`" in saved
+    assert "refine `src/db.py`" in saved
+    assert memory.read_plan() == saved
+    todos = memory.parse_todos()
+    assert [t.target for t in todos] == ["start_service.sh", "src/db.py"]
+
+
+def test_save_plan_from_editor_keeps_prose_when_todos_do_not_parse(
+    memory: WorkspaceMemory,
+) -> None:
+    edited = "# Plan\nGoal: make start_service.sh actually start the app\n\nNotes: use src.db:app\n"
+    saved = memory.save_plan_from_editor(edited)
+    assert "make start_service.sh actually start the app" in saved
+    assert "use src.db:app" in saved
+
+
+def test_plan_text_equivalent_ignores_trailing_whitespace() -> None:
+    assert plan_text_equivalent("Goal: x\n", "Goal: x")
+    assert plan_text_equivalent("a  \n\n", "a")
+    assert not plan_text_equivalent("Goal: a", "Goal: b")
+
+
+def test_render_finalized_plan_does_not_write(memory: WorkspaceMemory) -> None:
+    original = "# Plan\nGoal: stay put\n\n## Todos\n"
+    memory.write_plan(original)
+    draft = (
+        "# Plan\nGoal: add a helper\n\n## Todos\n"
+        "1. [ ] create `util.py` — helper\n"
+        "2. [ ] run `curl localhost:8000` — expect 200\n"
+    )
+    rendered = memory.render_finalized_plan(draft)
+    assert memory.read_plan() == original
+    assert "util.py" in rendered
+    assert memory.finalize_plan(draft) == rendered
+    assert memory.read_plan() == rendered
+
+
+def test_plan_edit_needs_review_when_standards_rewrite_changes_text(
+    memory: WorkspaceMemory,
+) -> None:
+    draft = (
+        "# Plan\nGoal: start the API\n\n## Todos\n"
+        "- make start_service.sh work somehow\n"
+        "please also add update routes\n"
+    )
+    finalized = memory.render_finalized_plan(draft)
+    assert plan_edit_needs_review(draft, finalized, skip_standards=False)
+    assert not plan_edit_needs_review(draft, finalized, skip_standards=True)
+    assert not plan_edit_needs_review(finalized, finalized, skip_standards=False)
 
 
 def test_finalize_renumbers_contiguously(memory: WorkspaceMemory) -> None:

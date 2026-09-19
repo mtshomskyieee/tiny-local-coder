@@ -2,7 +2,7 @@
 
 How TinyLocalCoder wires agents through a single compiled [`StateGraph`](../src/tinylocalcoder/graph/builder.py) (`Pipeline.graph`). Entry is always `route`; `mode` on [`AgentState`](../src/tinylocalcoder/graph/state.py) selects which agent path runs. Disk (`plan.md`, prototypes, `exec.log`, …) is shared memory between nodes.
 
-Compound CLI flows (`/review`, `/test`) are **not** graph nodes — they call `invoke("plan")` then `invoke("execute")` via [`agents/workflows.py`](../src/tinylocalcoder/agents/workflows.py). See [`Architecture.md`](Architecture.md) and [`use-cases.md`](use-cases.md).
+Compound CLI flows (`/review`, `/review-fix`, `/fix-plan`, `/test`) are **not** graph nodes — they call `invoke("plan")` (and usually `invoke("execute")`) via [`agents/workflows.py`](../src/tinylocalcoder/agents/workflows.py). See [`Architecture.md`](Architecture.md) and [`use-cases.md`](use-cases.md).
 
 ## Agents
 
@@ -16,7 +16,7 @@ Compound CLI flows (`/review`, `/test`) are **not** graph nodes — they call `i
 | **Ask** | `agents/ask.py` | `ask` | Q&A → `ask.md` with small context slices |
 | **Critic** | `agents/critic.py` | `critic` | End-of-pass CONTINUE/DONE (often deterministic by mode) |
 
-Supporting (not LangGraph agents): `CommandRunner` + `ApprovalGate` (shell), `WorkspaceMemory` (files/todos), workflow helpers (`review` / `test` prompts).
+Supporting (not LangGraph agents): `CommandRunner` + `ApprovalGate` (shell), `WorkspaceMemory` (files/todos), workflow helpers (`review` / `review-fix` / `fix-plan` / `test` prompts).
 
 ## Overall graph
 
@@ -91,6 +91,9 @@ flowchart LR
 | Call | Graph runs |
 |------|------------|
 | `Pipeline.invoke("plan"\|"code"\|"execute"\|"fix"\|"ask", prompt)` | One compiled-graph pass from `route` |
-| `Pipeline.invoke_workflow("review"\|"test", prompt)` | Two invokes: plan (fixed prompt) then execute |
+| `Pipeline.invoke_workflow("review", prompt)` | Tool `manifest.txt` → plan → tool `review.md` → execute |
+| `Pipeline.invoke_workflow("review-fix", prompt)` | Load `review.md` → plan fixes → execute (skipped if no findings) |
+| `Pipeline.invoke_workflow("fix-plan", prompt)` | Compare requirement vs plan → rewrite `plan.md` (no execute) |
+| `Pipeline.invoke_workflow("test", prompt)` | List test files → plan run steps → execute (live `test »` lines) |
 
 Recursion limit is `40` per invoke (`graph.invoke(..., config={"recursion_limit": 40})`).

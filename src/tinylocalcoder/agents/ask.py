@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from langchain_core.messages import HumanMessage, SystemMessage
 
-from tinylocalcoder.llm import invoke_llm
+from tinylocalcoder.llm import invoke_llm, message_text
 from tinylocalcoder.memory.files import WorkspaceMemory
 
 
@@ -29,6 +29,6 @@ def run_ask_agent(memory: WorkspaceMemory, prompt: str) -> str:
         HumanMessage(content=f"Context slices:\n{ctx}\n\nQuestion:\n{prompt}"),
     ]
     result = invoke_llm(messages)
-    text = result.content if isinstance(result.content, str) else str(result.content)
+    text = message_text(result)
     memory.append_ask("assistant", text)
     return text.strip()

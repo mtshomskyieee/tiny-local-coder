@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from langchain_core.messages import HumanMessage, SystemMessage
 
-from tinylocalcoder.llm import invoke_llm
+from tinylocalcoder.llm import invoke_llm, message_text
 from tinylocalcoder.memory.files import WorkspaceMemory
 
 
@@ -24,7 +24,7 @@ Rules:
 - Prefer ≤8 todos. Each todo is ONE tiny action: create | refine | run.
 - Creates first, then ONE batched py_compile, then ONE short behavioral python3 -c.
 - Do NOT stack many assert/run steps. One short check is enough.
-- Never put meta commands in todos (reset-todo, skip-todo, auto-fix, clear-plan, review, test, …).
+- Never put meta commands in todos (reset-todo, skip-todo, auto-fix, clear-plan, review, review-fix, fix-plan, test, …).
 - Paths/commands are workspace-relative. NEVER leading `/`.
 - NEVER use placeholder paths like `path/to/file.py` — use real names (`db.py`, `src/api.py`).
 - Prefer package-safe runs: `PYTHONPATH=. python3 -c "from src.api import app; …"`.
@@ -53,12 +53,20 @@ def run_plan_agent(memory: WorkspaceMemory, prompt: str) -> str:
         ),
     ]
     result = invoke_llm(messages)
-    text = result.content if isinstance(result.content, str) else str(result.content)
-    if text.strip().startswith("```"):
-        lines = text.strip().splitlines()
+    text = message_text(result)
+    if text.startswith("```"):
+        lines = text.splitlines()
         if lines[0].startswith("```"):
             lines = lines[1:]
         if lines and lines[-1].strip() == "```":
             lines = lines[:-1]
-        text = "\n".join(lines)
+        text = "\n".join(lines).strip()
+    if not text:
+        raise RuntimeError(
+            "The model returned an empty plan (no todos). "
+            "Reasoning models such as qwen3.5 can fill a 2048-token context "
+            "with hidden thinking and never write plan.md. "
+            "TinyLocalCoder now disables Ollama reasoning; rebuild/restart "
+            "the suite if this session is still on an old image."
+        )
     return memory.finalize_plan(text).strip()

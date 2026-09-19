@@ -5,6 +5,7 @@ services:
     ports:
       - "11434:11434"
     environment:
+      # Resolved from config.toml (model = "qwen2.5" | "qwen3.5")
       - MODEL_NAME=${MODEL_NAME:-qwen2.5:3b}
     entrypoint: ["/bin/sh", "/ollama-entrypoint.sh"]
     volumes:
@@ -24,7 +25,10 @@ services:
         condition: service_healthy
     environment:
       OLLAMA_BASE_URL: http://ollama:11434
+      # Active model comes from config.toml via ./start-service.sh
       MODEL_NAME: ${MODEL_NAME:-qwen2.5:3b}
+      TLC_MODEL_KEY: ${TLC_MODEL_KEY:-qwen2.5}
+      TLC_CONFIG: /app/config.toml
       NUM_CTX: ${NUM_CTX:-2048}
       THINKING_ENABLED: ${THINKING_ENABLED:-true}
       AUTO_FIX: ${AUTO_FIX:-true}
@@ -34,6 +38,9 @@ services:
       EXEC_TIMEOUT_SEC: ${EXEC_TIMEOUT_SEC:-60}
     volumes:
       - ./workspace:/workspace
+      - ./config.toml:/app/config.toml:ro
+      # Live package so /review and other host edits apply without --build
+      - ./src/tinylocalcoder:/app/src/tinylocalcoder:ro
     ports:
       - "8000:8000"
     stdin_open: true

@@ -14,17 +14,47 @@
 ## Requirements
 
 - Docker + Docker Compose
-- ~12 GB RAM (CPU-only is fine)
+- ~12 GB RAM for the Docker VM (CPU-only is fine). Default Colima is 2 GB — too small for `qwen3.5:4b`.
 - No GPU
+
+## Docker on a Mac (Colima)
+
+Linux runs Docker natively. On a Mac you need a Linux VM. If that VM is [Colima](https://github.com/abiosoft/colima), size it **before** starting TLC:
+
+```bash
+brew install colima docker docker-compose   # once
+./colima-start-stop-on-mac.sh               # restart: stop suite + Colima, start 4 CPU / 12 GB / 60 GB
+./start-service.sh
+```
+
+```bash
+./colima-start-stop-on-mac.sh start     # size and start the VM
+./colima-start-stop-on-mac.sh stop      # stop TLC, then Colima
+./colima-start-stop-on-mac.sh status    # colima list + Docker RAM
+./colima-start-stop-on-mac.sh --memory 16 --cpu 6
+```
+
+Skip this script if you use Docker Desktop, OrbStack, or Linux/WSL2 — still give that VM about 12 GB RAM.
 
 ## Quick start
 
 ```bash
-cp .env.example .env   # once
-./start-service.sh     # rebuild app image, then start Ollama + API
-./start-service.sh --no-build   # start without rebuilding
-./stop-service.sh      # stop the suite (use this instead of bare docker compose down)
+./start-service.sh              # creates .env if missing; prompts each time; Return keeps the saved default
+./start-service.sh --model qwen3.5
+./start-service.sh --no-prompt  # skip the picker (scripts / CI)
+./start-service.sh --build      # rebuild the app image
+./start-service.sh --foreground # attach to compose logs
+./stop-service.sh               # stop the suite (use this instead of bare docker compose down)
 ```
+
+`./start-service.sh` then:
+
+1. Writes the chosen model to `config.toml`
+2. Starts Ollama and checks Docker RAM against the model's `min_ram_gb` (fails early if the VM is too small)
+3. Pulls the model if it is not already installed (`qwen2.5` → [`qwen2.5:3b`](https://ollama.com/library/qwen2.5:3b), `qwen3.5` → [`qwen3.5:4b`](https://ollama.com/library/qwen3.5:4b))
+4. Recreates the API container on `:8000`
+
+The first pull is slow; weights stay in `crew_pipeline_ollama_data` across `./stop-service.sh`.
 
 The API listens on `http://localhost:8000`. Launch the interactive TUI with:
 
@@ -32,8 +62,6 @@ The API listens on `http://localhost:8000`. Launch the interactive TUI with:
 ./cli.sh
 # equivalent: docker compose run --rm -it app tui
 ```
-
-First boot pulls `qwen2.5:3b` into the Ollama volume — slow, but only once. The model volume is `crew_pipeline_ollama_data` and survives `./stop-service.sh`.
 
 ## How-to: your first plan
 
@@ -58,7 +86,7 @@ Choose **Allow** for this one command, **Deny** to skip and log it, or **Allow a
 
 **4. When something fails**, TLC tries to recover on its own: one code repair and retry, then — if the *todo itself* looks wrong — one rewrite of the remaining open todos, and failing that it marks the step `[!]` and moves on. Reopen skipped steps with `/reset-todo N` and run `/execute-plan` again.
 
-Full walkthroughs for fixing, reviewing and testing are in **[docs/use-cases.md](docs/use-cases.md)**.
+Full walkthroughs for fixing, reviewing, applying review fixes, and testing are in **[docs/use-cases.md](docs/use-cases.md)**.
 
 ## Modes
 
@@ -68,9 +96,11 @@ Full walkthroughs for fixing, reviewing and testing are in **[docs/use-cases.md]
 | `/code` | Run the next create/refine todo only (small context) |
 | `/execute-plan` | Walk todos one-by-one; each LLM call sees **only the current step** |
 | `/ask` | Q&A written to `workspace/ask.md` |
-| `/fix` | Code-only repair of the last failure |
-| `/review` | Tool-built `manifest.txt` + opinionated `review.md`, then `/execute-plan` |
-| `/test` | Plan a runnable test plan into `plan.md`, then run `/execute-plan` |
+| `/fix` | Repair the last failure, or a named file (`/fix start_service.sh …`) |
+| `/fix-plan` | Compare the requirement to `plan.md` and rewrite the todos (no execute) |
+| `/review` | Tool-built `manifest.txt`, per-file notes in `review.md` (shown live), then `/execute-plan` |
+| `/review-fix` | Plan refine/fix todos from `review.md` findings, then `/execute-plan` |
+| `/test` | Find tests, show the run plan, then execute each step live |
 
 **Default plan shape (enforced after `/plan`):** a few `create`/`refine` steps → **one** batched `py_compile` → **one** short `python3 -c` smoke check. Prefer ≤8 todos. Meta commands (`reset-todo`, …) are stripped if they leak into the plan.
 
@@ -84,11 +114,11 @@ After `/plan` finishes, the TUI prints a next-step hint. While agents work, a **
 |---------|------|
 | `/quit` (`/exit`) | Leave the TUI |
 | `/show-plan` (`/plan` or `/plan show`) | Print current `plan.md` |
-| `/plan-edit` (`/edit-plan`, `/plan edit`) | Full-screen edit of `plan.md` (Save / Cancel) |
+| `/plan-edit` (`/edit-plan`, `/plan edit`) | Full-screen edit of `plan.md` (Save applies standards; stay open to Undo if rewritten) |
 | `/clear-plan` (`/plan clear`) | Reset `plan.md` to empty Goal/Todos (keeps code files) |
 | `/archive-plan` (`/plan archive`) | Save `plan.md` under `workspace/archives/` then clear |
 | `/clear` (`/new`) | Reset ask/exec session logs; keeps plan + code; resets session token counter |
-| `/model` | Show current model and how to set `MODEL_NAME` |
+| `/model` | Show current model and how to change it in `config.toml` |
 | `/usage` | Session + lifetime token counts (no $ cost) |
 | `/auto-fix on\|off` | Enable/disable automatic repair+retry on failed steps |
 | `/auto-skip on\|off` | Skip failed todos after fix and continue plan |
@@ -154,9 +184,26 @@ THINKING_ENABLED=false
 
 ## Configuration
 
-See `.env.example`. Important knobs:
+`./start-service.sh` asks for the model every time. The saved default is pre-selected — press Return to keep it, or pick another. The picker also shows each model's Docker RAM note from `config.toml`. The choice is written to `config.toml`.
 
-- `MODEL_NAME=qwen2.5:3b`
+```toml
+model = "qwen2.5"   # or "qwen3.5"
+```
+
+```bash
+./start-service.sh --model qwen3.5
+./start-service.sh --no-prompt
+./start-service.sh --build
+./start-service.sh --foreground
+```
+
+| Key | Pulls | Size | Source |
+|-----|--------|------|--------|
+| `qwen2.5` | `qwen2.5:3b` | ~2 GB | https://ollama.com/library/qwen2.5:3b |
+| `qwen3.5` | `qwen3.5:4b` | ~3.4 GB | https://ollama.com/library/qwen3.5:4b |
+
+See `.env.example` for the other knobs:
+
 - `NUM_CTX=2048` (raise to 4096 only if you have headroom)
 - `AUTO_FIX` / `AUTO_FIX_MAX` — one code repair+retry per failed run step
 - `AUTO_REPLAN` — one open-todo rewrite when the failing step looks like a bad plan
@@ -173,6 +220,8 @@ See `.env.example`. Important knobs:
 - `POST /v1/execute/approve` `{ "command_id": "...", "decision": "allow" }`
 - `POST /v1/ask` `{ "prompt": "..." }`
 - `POST /v1/review` `{ "prompt": "..." }` — plan then execute review workflow
+- `POST /v1/review-fix` `{ "prompt": "..." }` — plan then execute fixes from review.md
+- `POST /v1/fix-plan` `{ "prompt": "..." }` — rewrite plan.md to match the requirement
 - `POST /v1/test` `{ "prompt": "..." }` — plan then execute test workflow
 - `GET /v1/workspace/files`
 - `GET /v1/workspace/file?path=plan.md`

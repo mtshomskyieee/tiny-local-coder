@@ -5,6 +5,9 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$ROOT"
 
+# shellcheck source=scripts/compose-env.sh
+source "$ROOT/scripts/compose-env.sh"
+
 COMPOSE=(docker compose)
 if ! docker compose version >/dev/null 2>&1; then
   if command -v docker-compose >/dev/null 2>&1; then
@@ -139,4 +142,9 @@ fi
 echo "  toggle: /auto-skip on|off   /auto-fix on|off"
 echo "  ollama: ok (http://ollama:11434)"
 # Do not publish host ports — the long-running app service already owns :8000.
-exec "${COMPOSE[@]}" run --rm -it --no-deps "${RUN_ENV[@]}" app tui
+# Never expand an empty array under `set -u` (bash 3.2 through 5.x).
+if ((${#RUN_ENV[@]})); then
+  exec "${COMPOSE[@]}" run --rm -it --no-deps "${RUN_ENV[@]}" app tui
+else
+  exec "${COMPOSE[@]}" run --rm -it --no-deps app tui
+fi

@@ -6,7 +6,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     curl \
     && rm -rf /var/lib/apt/lists/*
 
-COPY requirements.txt pyproject.toml README.md ./
+COPY requirements.txt pyproject.toml README.md config.toml ./
 COPY src ./src
 
 RUN pip install --no-cache-dir -r requirements.txt && pip install --no-cache-dir -e .
@@ -15,6 +15,7 @@ RUN mkdir -p /workspace
 
 ENV WORKSPACE_DIR=/workspace \
     OLLAMA_BASE_URL=http://ollama:11434 \
+    TLC_CONFIG=/app/config.toml \
     MODEL_NAME=qwen2.5:3b \
     NUM_CTX=2048 \
     THINKING_ENABLED=true \

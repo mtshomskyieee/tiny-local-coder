@@ -15,7 +15,8 @@ from tinylocalcoder.config import get_settings
 from tinylocalcoder.exec.gate import ApprovalGate, Decision, PendingCommand
 from tinylocalcoder.graph.builder import build_pipeline
 from tinylocalcoder.memory.files import META_TODO_NAMES, meta_command_name
-from tinylocalcoder.tui.screens import ApprovalScreen, PlanEditScreen
+from tinylocalcoder.model_config import iter_models, load_model_choice
+from tinylocalcoder.tui.screens import ApprovalScreen, PlanEditResult, PlanEditScreen
 from tinylocalcoder.usage import get_usage_tracker
 
 _MODE_ALIASES = {
@@ -29,7 +30,7 @@ _MODE_ALIASES = {
     "run-plan": "execute",
 }
 
-_WORKFLOW_COMMANDS = frozenset({"review", "test"})
+_WORKFLOW_COMMANDS = frozenset({"review", "test", "review-fix", "fix-plan"})
 
 _META_COMMANDS = set(META_TODO_NAMES) | {
     "help",
@@ -61,6 +62,8 @@ _META_COMMANDS = set(META_TODO_NAMES) | {
     "reset-all-skipped",
     "reset-skipped",
     "review",
+    "review-fix",
+    "fix-plan",
     "test",
     "procs",
     "processes",
@@ -72,7 +75,7 @@ _META_COMMANDS = set(META_TODO_NAMES) | {
 # Mode words that are also meta when used as /commands, but must NOT steal
 # freeform plan prompts like "plan a flask app" when typed without /.
 _META_ONLY_WITH_SLASH = frozenset(
-    {"plan", "code", "ask", "execute", "fix", "reset", "review", "test"}
+    {"plan", "code", "ask", "execute", "fix", "reset", "review", "review-fix", "fix-plan", "test"}
 )
 
 
@@ -122,6 +125,14 @@ def _thinking_body(message: str) -> str:
 def _thinking_for_mode(mode: str, prompt: str, memory) -> str:
     """Build a short status line for the thinking bar before work starts."""
     prompt = (prompt or "").strip()
+    if mode == "review":
+        return "thinking … review: 1/4 writing manifest.txt"
+    if mode == "review-fix":
+        return "thinking … review-fix: 1/3 loading review.md"
+    if mode == "fix-plan":
+        return "thinking … fix-plan: 1/3 reading requirement and plan.md"
+    if mode == "test":
+        return "thinking … test: 1/3 looking for existing tests"
     if mode in _WORKFLOW_COMMANDS:
         return f"thinking … {mode}: planning"
     if mode == "plan":
@@ -201,9 +212,11 @@ class PromptInput(Input):
 
 _HELP = """[b]Commands[/b]
   [cyan]/plan[/] [green]/code[/] [yellow]/execute[/] (/execute-plan) [magenta]/ask[/]
-  [blue]/review[/]      — plan manifest.txt + review.md comments, then execute
-  [blue]/test[/]        — plan a runnable test plan, then execute it
-  [red]/fix[/]         — read last error + files/dirs, apply LLM/heuristic repairs
+  [blue]/review[/]      — inventory → per-file notes in review.md (shown in the log)
+  [blue]/review-fix[/]  — plan fixes from review.md, then execute that plan
+  [blue]/fix-plan[/]    — compare requirement vs plan.md and rewrite the todos
+  [blue]/test[/]        — find tests, show the plan, run each step (live in the log)
+  [red]/fix[/]         — last failure or a file hint (e.g. /fix start_service.sh)
   [b]/procs[/]         — list PIDs tracked from /execute (ports, status)
   [b]/kill-procs[/]    — kill all tracked execute processes
   [b]/auto-fix[/]      — show auto-fix status (on by default after failures)
@@ -218,14 +231,14 @@ _HELP = """[b]Commands[/b]
   [b]/code show path[/] — print a workspace file (e.g. /code show src/main.py)
   [b]/code update …[/] — edit a named file from your prompt (writes to disk)
   [b]/show-plan[/]     — print current plan.md
-  [b]/plan-edit[/]     — full-screen edit plan.md (Save / Cancel · Ctrl+S / Esc)
+  [b]/plan-edit[/]     — full-screen edit plan.md (Save applies standards; Undo if rewritten)
   [b]/clear-plan[/]    — reset plan.md to empty todos (code files kept)
   [b]/archive-plan[/]  — save plan.md under workspace/archives/ then clear
   [b]/archive name[/]  — copy entire workspace into workspace/archive/<name>
   [b]/clear-workspace[/] — move everything (except archive/) into archive/<timestamp>, blank plan/ask
   [b]/plan show|clear|archive|edit[/] — same as above
   [b]/clear[/] (/new)  — reset ask/exec session logs (keeps plan + code)
-  [b]/model[/]         — show current model + how to change it
+  [b]/model[/]         — show current model + how to change it (config.toml)
   [b]/usage[/]         — token usage (session + lifetime; no $ cost)
   [b]/help[/]          — this list
   [b]/quit[/] (/exit)  — leave the TUI
@@ -303,6 +316,30 @@ class TinyLocalCoderTui(App[None]):
     def _on_pipeline_progress(self, message: str) -> None:
         """Update thinking bar from a worker thread during pipeline steps."""
         self.call_from_thread(self._show_thinking, message)
+        if (
+            message.startswith("review »")
+            or message.startswith("review-fix »")
+            or message.startswith("test »")
+            or message.startswith("fix-plan »")
+        ):
+            self.call_from_thread(self._append_log, f"[blue]{message}[/]")
+        if message.startswith("review » manifest.txt ready"):
+            self.call_from_thread(self._show_manifest)
+        if message.startswith("review » review.md saved"):
+            self.call_from_thread(self._show_review_md)
+        if message.startswith("review-fix » review.md ready"):
+            self.call_from_thread(self._show_review_md)
+        if message.startswith("review-fix » plan.md ready"):
+            self.call_from_thread(self._show_current_plan)
+        if message.startswith("test » plan.md ready"):
+            self.call_from_thread(self._show_current_plan)
+        if message.startswith("fix-plan » plan.md ready"):
+            self.call_from_thread(self._show_current_plan)
+        if message.startswith("todos »"):
+            self.call_from_thread(self._show_todo_board)
+
+    def _append_log(self, markup: str) -> None:
+        self.query_one("#log", RichLog).write(markup)
 
     def compose(self) -> ComposeResult:
         yield Header()
@@ -337,7 +374,7 @@ class TinyLocalCoderTui(App[None]):
         log.write(
             "Modes: [cyan]/plan[/] [green]/code[/] "
             "[yellow]/execute-plan[/] [red]/fix[/] [magenta]/ask[/]  ·  "
-            "flows: [blue]/review /test[/]  ·  "
+            "flows: [blue]/review /review-fix /fix-plan /test[/]  ·  "
             "plan: [b]/show-plan /plan-edit /clear-plan /archive /clear-workspace[/b]  ·  "
             "meta: [b]/auto-fix /auto-skip /skip-todo /reset-todo "
             "/reset-all-skipped /clear /model /usage /help /quit[/b]"
@@ -415,20 +452,68 @@ class TinyLocalCoderTui(App[None]):
             text = text[:6000] + "\n…[truncated]"
         log.write(text)
 
+    def _show_todo_board(self) -> None:
+        """Reprint every todo after a step completes, including [x] / [!]."""
+        from rich.markup import escape
+
+        log = self.query_one("#log", RichLog)
+        memory = self.pipeline.memory
+        p = memory.progress_summary()
+        skip = p.get("todos_skipped", 0)
+        extra = f"  +{skip} skipped" if skip else ""
+        log.write(
+            f"[b]Todos[/b] {p.get('todos_done', 0)}/{p.get('todos_total', 0)}{extra}"
+        )
+        todos = memory.parse_todos()
+        if not todos:
+            log.write("[dim](no todos)[/]")
+            return
+        for todo in todos:
+            line = escape(memory.format_todo_line(todo))
+            if todo.done:
+                log.write(f"[green]{line}[/]")
+            elif todo.skipped:
+                log.write(f"[yellow]{line}[/]")
+            else:
+                log.write(f"[dim]{line}[/]")
+
+    def _ensure_review_md(self) -> str:
+        """Write review.md from the manifest if it is missing or blank."""
+        from tinylocalcoder.tools.review import write_review
+
+        memory = self.pipeline.memory
+        body = memory.read_prototype("review.md").strip()
+        if body:
+            return body
+        write_review(memory)
+        return memory.read_prototype("review.md").strip()
+
+    def _show_manifest(self, text: str = "") -> None:
+        from rich.markup import escape
+
+        log = self.query_one("#log", RichLog)
+        body = (text or self.pipeline.memory.read_prototype("manifest.txt")).strip()
+        log.write("[b cyan]manifest.txt[/]")
+        if not body:
+            log.write("[dim](no source files inventoried)[/]")
+            return
+        log.write(escape(body))
+
     def _show_review_md(self, text: str | None = None) -> None:
         """Display review.md in the log (review workflow deliverable)."""
         from rich.markup import escape
 
         log = self.query_one("#log", RichLog)
-        body = (text if text is not None else self.pipeline.memory.read_prototype("review.md")).strip()
+        if text is None:
+            body = self._ensure_review_md()
+        else:
+            body = text.strip() or self._ensure_review_md()
         if not body:
-            log.write("[yellow]review.md[/] is empty.")
+            log.write("[yellow]review.md[/] is empty — no source files to review.")
             return
         log.write("[b green]review.md[/]")
-        # Reviews are the point of /review — allow a larger display than generic output
         if len(body) > 12000:
             body = body[:12000] + "\n…[truncated]"
-        # Escape so findings like `keys() or [0]` don't break Rich markup
         log.write(escape(body))
 
     def _handle_meta(self, cmd: str, rest: str = "") -> bool:
@@ -442,8 +527,10 @@ class TinyLocalCoderTui(App[None]):
                 log.write("[dim]Still thinking ... please wait (or /quit).[/dim]")
                 return True
             label = {
-                "review": "plan manifest.txt + review.md, then execute",
-                "test": "plan a runnable test plan, then execute",
+                "review": "write manifest.txt, plan from it, write review.md, then execute",
+                "review-fix": "plan fixes from review.md, then execute",
+                "fix-plan": "compare requirement vs plan.md and rewrite todos",
+                "test": "find tests, plan how to run them, then execute each step",
             }[cmd]
             log.write(f"[blue]/{cmd}[/] — {label}")
             self._start_workflow(cmd, rest)
@@ -460,20 +547,35 @@ class TinyLocalCoderTui(App[None]):
                 return True
             initial = self.pipeline.memory.read_plan()
 
-            def on_edit_done(result: str | None) -> None:
+            def on_edit_done(result: PlanEditResult | None) -> None:
                 log = self.query_one("#log", RichLog)
                 if result is None:
                     log.write("[dim]/plan-edit[/] — cancelled; plan.md unchanged.")
+                elif result.skip_standards:
+                    self.pipeline.memory.save_plan_from_editor(result.text)
+                    log.write(
+                        "[green]/plan-edit[/] — saved plan.md "
+                        "(kept your text after undoing the automated fix)."
+                    )
+                    self._show_current_plan()
+                    self._refresh_status()
                 else:
-                    self.pipeline.memory.finalize_plan(result)
-                    log.write("[green]/plan-edit[/] — saved and normalized plan.md.")
+                    self.pipeline.memory.finalize_plan(result.text)
+                    log.write("[green]/plan-edit[/] — saved plan.md.")
+                    self._show_current_plan()
                     self._refresh_status()
                 try:
                     self.query_one("#input", PromptInput).focus()
                 except Exception:  # noqa: BLE001
                     pass
 
-            self.push_screen(PlanEditScreen(initial), on_edit_done)
+            self.push_screen(
+                PlanEditScreen(
+                    initial,
+                    finalize=self.pipeline.memory.render_finalized_plan,
+                ),
+                on_edit_done,
+            )
             return True
         if cmd in {"clear-plan", "plan-clear"}:
             self.pipeline.memory.clear_plan()
@@ -550,13 +652,18 @@ class TinyLocalCoderTui(App[None]):
             self._refresh_status()
             return True
         if cmd == "model":
-            model = self.settings.model_name
-            log.write(f"[b]Current model:[/b] {model}")
+            choice = load_model_choice()
             log.write(
-                "To change it, set the environment variable and restart the suite:"
+                f"[b]Current model:[/b] {choice.key} → {self.settings.model_name}"
             )
-            log.write("  [cyan]MODEL_NAME=qwen2.5:1.5b ./start-service.sh[/]")
-            log.write("  or edit [cyan].env[/] → [cyan]MODEL_NAME=...[/] then restart")
+            log.write("Edit [cyan]config.toml[/] then restart the suite:")
+            log.write('  [cyan]model = "qwen3.5"[/]   # or "qwen2.5"')
+            log.write("  then [cyan]./start-service.sh[/]")
+            log.write("[b]Catalog:[/b]")
+            for spec in iter_models():
+                mark = " [green](active)[/]" if spec.key == choice.key else ""
+                log.write(f"  {spec.key}: {spec.ollama}{mark}")
+                log.write(f"    {spec.url}")
             log.write(f"  Ollama base URL: {self.settings.ollama_base_url}")
             return True
         if cmd == "usage":
@@ -753,9 +860,30 @@ class TinyLocalCoderTui(App[None]):
         self.mode = kind
         self._refresh_status()
         log = self.query_one("#log", RichLog)
-        log.write(
-            f"\n[b]→ /{kind}[/b] {prompt or '(plan → execute workflow)'}"
-        )
+        if kind == "review":
+            log.write(
+                f"\n[b]→ /review[/b] {prompt or ''}".rstrip()
+                + "\n[dim]workflow: inventory → plan → per-file review → save[/]"
+            )
+        elif kind == "review-fix":
+            log.write(
+                f"\n[b]→ /review-fix[/b] {prompt or ''}".rstrip()
+                + "\n[dim]workflow: load review.md → plan fixes → execute[/]"
+            )
+        elif kind == "fix-plan":
+            log.write(
+                f"\n[b]→ /fix-plan[/b] {prompt or ''}".rstrip()
+                + "\n[dim]workflow: requirement vs plan.md → rewrite todos (no execute)[/]"
+            )
+        elif kind == "test":
+            log.write(
+                f"\n[b]→ /test[/b] {prompt or ''}".rstrip()
+                + "\n[dim]workflow: find tests → plan run steps → execute each[/]"
+            )
+        else:
+            log.write(
+                f"\n[b]→ /{kind}[/b] {prompt or '(plan → execute workflow)'}"
+            )
         self._show_thinking(_thinking_for_mode(kind, prompt, self.pipeline.memory))
         self.run_pipeline(kind, prompt, workflow=kind)
 
@@ -874,8 +1002,11 @@ class TinyLocalCoderTui(App[None]):
 
             def fail() -> None:
                 self._clear_thinking()
-                log.write(f"[red]Error: {exc}[/red]")
-                memory.append_session("assistant", f"Error: {exc}")
+                text = str(exc).strip() or "unknown error"
+                log.write("[red]Error:[/red]")
+                for line in text.splitlines() or [text]:
+                    log.write(f"[red]{line}[/red]")
+                memory.append_session("assistant", f"Error: {text}")
                 self._refresh_status()
 
             self.call_from_thread(fail)
@@ -894,15 +1025,62 @@ class TinyLocalCoderTui(App[None]):
             if session_bits:
                 memory.append_session("assistant", "\n".join(session_bits))
 
-            # /review: show the written review.md as the primary result
+            # /review: show steps, manifest, then the written review.md
             if (workflow or result.get("workflow")) == "review":
+                log.write("[b]/review[/] — inventory → plan → per-file review → save")
+                self._show_manifest(str(result.get("manifest_text") or ""))
                 review_body = str(result.get("review_markdown") or "").strip()
-                if not review_body and memory.prototype_exists("review.md"):
-                    review_body = memory.read_prototype("review.md").strip()
-                self._show_review_md(review_body)
-                log.write("[green]file:[/green] review.md")
+                self._show_review_md(review_body or None)
+                log.write("[green]saved:[/green] manifest.txt  review.md")
                 self._refresh_status()
                 log.write("[b green]/review complete.[/]")
+                return
+
+            if (workflow or result.get("workflow")) == "review-fix":
+                log.write("[b]/review-fix[/] — load review.md → plan fixes → execute")
+                issues = str(result.get("issues_text") or "").strip()
+                if issues:
+                    log.write("[b cyan]findings[/]")
+                    log.write(issues)
+                self._show_current_plan()
+                if result.get("skipped_execute"):
+                    log.write("[dim]No fix todos to execute.[/]")
+                log.write("[green]saved:[/green] plan.md")
+                self._refresh_status()
+                log.write("[b green]/review-fix complete.[/]")
+                return
+
+            if (workflow or result.get("workflow")) == "fix-plan":
+                log.write("[b]/fix-plan[/] — requirement vs plan.md → rewrite todos")
+                req = str(result.get("requirement") or "").strip()
+                if req:
+                    log.write("[b cyan]requirement[/]")
+                    log.write(req[:800] + ("…" if len(req) > 800 else ""))
+                gaps = result.get("gaps") or []
+                if gaps:
+                    log.write("[b yellow]gaps[/]")
+                    for gap in gaps:
+                        log.write(f"  • {gap}")
+                self._show_current_plan()
+                log.write("[green]saved:[/green] plan.md  (not executed)")
+                log.write("[dim]Next: [yellow]/execute-plan[/] or press F5.[/]")
+                self._refresh_status()
+                log.write("[b green]/fix-plan complete.[/]")
+                return
+
+            if (workflow or result.get("workflow")) == "test":
+                log.write("[b]/test[/] — find tests → plan run steps → execute")
+                found = result.get("test_files") or []
+                if found:
+                    log.write("[b cyan]test files[/]")
+                    for path in found:
+                        log.write(f"  {path}")
+                self._show_current_plan()
+                if result.get("last_command"):
+                    log.write(f"[yellow]last cmd:[/yellow] {result['last_command']}")
+                log.write("[green]saved:[/green] plan.md")
+                self._refresh_status()
+                log.write("[b green]/test complete.[/]")
                 return
 
             if len(out) > 4000:
@@ -931,8 +1109,9 @@ class TinyLocalCoderTui(App[None]):
                     )
                 else:
                     log.write(
-                        "[dim]No file changes. Add a hint: "
-                        "[red]/fix create src/__init__.py[/][/dim]"
+                        "[dim]No file changes. Name the file: "
+                        "[red]/fix start_service.sh should import src.db[/] "
+                        "or rewrite todos with [blue]/fix-plan[/].[/dim]"
                     )
             elif effective == "execute":
                 p = self.pipeline.memory.progress_summary()

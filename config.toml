@@ -1,0 +1,19 @@
+# Tiny Local Coder — pick the model, then restart: ./start-service.sh
+# Options: qwen2.5 | qwen3.5
+model = "qwen2.5"
+
+[models."qwen2.5"]
+# https://ollama.com/library/qwen2.5:3b
+ollama = "qwen2.5:3b"
+num_ctx = 2048
+min_ram_gb = 4
+url = "https://ollama.com/library/qwen2.5:3b"
+
+[models."qwen3.5"]
+# https://ollama.com/library/qwen3.5:4b  (~3.4GB on disk; needs ~8 GB Docker RAM to load)
+# Other local tags: qwen3.5:2b  qwen3.5:0.8b  qwen3.5:9b
+# https://ollama.com/library/qwen3.5
+ollama = "qwen3.5:4b"
+num_ctx = 2048
+min_ram_gb = 8
+url = "https://ollama.com/library/qwen3.5:4b"
