@@ -80,6 +80,40 @@ Then retry:
 /auto-replan on
 ```
 
+Name the file when `/fix` has no last failure, or the last error is the wrong problem:
+
+```text
+/fix start_service.sh should import src.db and print routes
+```
+
+---
+
+## Repairing the plan
+
+**Goal:** Check the original requirement against `plan.md` and rewrite todos that miss files, endpoints, or start scripts — without executing yet.
+
+**CLI**
+
+```text
+/fix-plan
+```
+
+Optional note (merged into the requirement):
+
+```text
+/fix-plan start_service.sh must start src/db.py
+```
+
+**What happens**
+
+The TUI prints `fix-plan » N/3 …`.
+
+1. **1/3** — load the requirement (your note, current Goal, last non-command session turn) and `plan.md`.
+2. **2/3** — list structural gaps (stub `start_*.sh`, required endpoints missing from source, empty Goal).
+3. **3/3** — `/plan` rewrites `plan.md`. The TUI prints the new todos. Nothing is executed.
+
+Then run `/execute-plan` (or F5).
+
 ---
 
 ## 3. Reviewing the code
@@ -158,9 +192,12 @@ Optional note:
 
 **What happens**
 
-1. Fixed test prompt drives `/plan` — find existing tests (or add a tiny smoke test) and add `run` todos (`pytest` / `unittest`).
-2. That plan **is** `plan.md`; `/execute-plan` runs immediately.
-3. Approve test commands at the gate; check `exec.log` and the TUI log for results.
+The TUI prints each stage as `test » N/3 …`, then a line when each todo starts and finishes.
+
+1. **1/3** — list existing `test_*.py` / `tests/` files (or note that a smoke test may be added).
+2. **2/3** — `/plan` writes run (and optional create) todos. The TUI prints `plan.md` and each step.
+3. **3/3** — `/execute-plan` walks those todos. Approve pytest/unittest at the gate. Each step logs `test » running …` then `test » done … [ok|failed]`.
+4. Afterward the TUI reprints `plan.md` with `[x]` / `[!]` so you can see what completed.
 
 If tests were skipped (`[!]`):
 

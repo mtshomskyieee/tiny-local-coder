@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from tinylocalcoder.agents.workflows import run_workflow
+from tinylocalcoder.agents.workflows import plan_requirement_gaps, run_workflow
 from tinylocalcoder.config import Settings
 from tinylocalcoder.memory.files import WorkspaceMemory
 from tinylocalcoder.tools.review import REVIEW_NAME
@@ -246,3 +246,117 @@ def test_review_fix_writes_review_md_when_missing(tmp_path: Path) -> None:
     assert seen
     assert "app.py" in seen[0]
     assert result["issue_count"] >= 1
+
+
+def test_test_workflow_lists_files_and_plan_steps(tmp_path: Path) -> None:
+    mem = _memory(tmp_path)
+    (tmp_path / "tests").mkdir()
+    (tmp_path / "tests" / "test_db.py").write_text(
+        "def test_ok():\n    assert True\n",
+        encoding="utf-8",
+    )
+    seen: list[str] = []
+
+    class Capture(_FakePipeline):
+        def invoke(self, mode: str, prompt: str = "", **_extra: object) -> dict:
+            if mode == "plan":
+                seen.append(prompt)
+            return super().invoke(mode, prompt, **_extra)
+
+    plan = (
+        "# Plan\n"
+        "Goal: run existing tests\n"
+        "\n"
+        "## Todos\n"
+        "1. [ ] run `python3 -m pytest tests/test_db.py -v` — expect success\n"
+    )
+    pipe = Capture(mem, plan)
+    result = run_workflow(pipe, "test")  # type: ignore[arg-type]
+    assert pipe.modes == ["plan", "execute"]
+    assert result["workflow"] == "test"
+    assert "tests/test_db.py" in result["test_files"]
+    assert "tests/test_db.py" in seen[0]
+    assert "python3 -m pytest tests/test_db.py" in result["plan_text"]
+    steps = result["log_lines"]
+    assert any("1/3 looking for existing tests" in line for line in steps)
+    assert any("2/3 planning how tests will run" in line for line in steps)
+    assert any("3/3 executing test plan" in line for line in steps)
+    assert any("tests/test_db.py" in line for line in steps)
+    assert any("run `python3 -m pytest tests/test_db.py -v`" in line for line in steps)
+    assert any("plan.md ready" in line for line in steps)
+    assert any("finished" in line for line in steps)
+
+
+def test_test_workflow_notes_missing_tests(tmp_path: Path) -> None:
+    mem = _memory(tmp_path)
+    (tmp_path / "app.py").write_text("x = 1\n", encoding="utf-8")
+    result = run_workflow(
+        _FakePipeline(
+            mem,
+            "# Plan\nGoal: add smoke\n\n## Todos\n"
+            "1. [ ] create `tests/test_app.py` — smoke\n"
+            "2. [ ] run `python3 -m pytest tests/test_app.py -v` — expect success\n",
+        ),  # type: ignore[arg-type]
+        "test",
+    )
+    assert result["test_files"] == []
+    assert any("no test files yet" in line for line in result["log_lines"])
+    assert any("create `tests/test_app.py`" in line for line in result["log_lines"])
+
+
+def test_plan_requirement_gaps_flags_stub_start_script(tmp_path: Path) -> None:
+    mem = _memory(tmp_path)
+    (tmp_path / "src").mkdir()
+    (tmp_path / "src" / "db.py").write_text(
+        "from fastapi import FastAPI\napp = FastAPI()\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "start_service.sh").write_text(
+        "#!/usr/bin/env bash\nset -e\n",
+        encoding="utf-8",
+    )
+    mem.write_plan("# Plan\nGoal: (none)\n\n## Todos\n")
+    gaps = plan_requirement_gaps(
+        mem,
+        "fastapi src/db.py db.json select insert update delete start_service.sh",
+    )
+    assert any("start_service.sh" in g for g in gaps)
+    assert any("update" in g for g in gaps)
+    assert any("delete" in g for g in gaps)
+
+
+def test_fix_plan_rewrites_plan_and_does_not_execute(tmp_path: Path) -> None:
+    mem = _memory(tmp_path)
+    (tmp_path / "start_service.sh").write_text("#!/bin/sh\n", encoding="utf-8")
+    mem.write_plan("# Plan\nGoal: (none)\n\n## Todos\n")
+    mem.append_session(
+        "user",
+        "create a fastapi server at src/db.py with select insert update delete",
+    )
+    plan = (
+        "# Plan\n"
+        "Goal: FastAPI db on src/db.py plus start_service.sh\n"
+        "\n"
+        "## Todos\n"
+        "1. [ ] refine `start_service.sh` — print app routes and exit\n"
+        "2. [ ] refine `src/db.py` — add update and delete routes\n"
+    )
+    pipe = _FakePipeline(mem, plan)
+    result = run_workflow(
+        pipe,  # type: ignore[arg-type]
+        "fix-plan",
+        extra="start_service.sh must start src/db.py",
+    )
+    assert pipe.modes == ["plan"]
+    assert result["skipped_execute"] is True
+    assert result["workflow"] == "fix-plan"
+    assert result["last_file"] == "plan.md"
+    assert any("start_service.sh" in g for g in result["gaps"])
+    assert "start_service.sh" in seen_or_prompt(pipe, result)
+    assert any("1/3 reading requirement" in line for line in result["log_lines"])
+    assert any("3/3 rewriting plan.md" in line for line in result["log_lines"])
+    assert "refine `start_service.sh`" in result["plan_text"]
+
+
+def seen_or_prompt(pipe: _FakePipeline, result: dict) -> str:
+    return " ".join(result.get("log_lines") or []) + " " + str(result.get("requirement") or "")

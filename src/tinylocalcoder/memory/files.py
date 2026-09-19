@@ -67,6 +67,7 @@ META_TODO_NAMES = frozenset(
         "reset-skipped",
         "review",
         "review-fix",
+        "fix-plan",
         "test",
         "procs",
         "processes",
@@ -145,6 +146,16 @@ def strip_placeholders_in_command(command: str) -> str:
     c = command or ""
     c = c.replace("./path/to/", "").replace("path/to/", "")
     return c
+
+
+def plan_text_equivalent(left: str, right: str) -> bool:
+    """True when two plan drafts match after trailing-whitespace / newline normalize."""
+
+    def canon(text: str) -> str:
+        lines = (text or "").replace("\r\n", "\n").splitlines()
+        return "\n".join(line.rstrip() for line in lines).strip()
+
+    return canon(left) == canon(right)
 
 
 def looks_fastapi_goal(goal: str, todos: list | None = None) -> bool:
@@ -265,6 +276,31 @@ class WorkspaceMemory:
     def write_plan(self, content: str) -> None:
         self.plan_path.write_text(content, encoding="utf-8")
         self.reindex_plan()
+
+    def save_plan_from_editor(self, text: str) -> str:
+        """Persist a human-edited plan.md without LLM sanitize/augment.
+
+        Hand edits were being lost: finalize_plan dropped lines that did not
+        match the 3B-safe todo regex and then rewrote an empty skeleton.
+        """
+        raw = text if text is not None else ""
+        normalized = self.normalize_plan_markdown(raw)
+        todos = self._todos_from_lines(
+            normalized.splitlines(), require_section=True
+        ) or self._todos_from_lines(normalized.splitlines(), require_section=False)
+        if todos:
+            goal = self.plan_goal_from_text(normalized) or "(see todos)"
+            final = self._rewrite_plan_from_todos(
+                goal,
+                todos,
+                strip_meta=True,
+                done_summary=self.plan_done_from_text(normalized),
+                extra_section=self.plan_extra_from_text(normalized),
+            )
+        else:
+            final = normalized if normalized.endswith("\n") else normalized + "\n"
+        self.write_plan(final)
+        return final
 
     def append_ask(self, role: str, text: str) -> None:
         with self.ask_path.open("a", encoding="utf-8") as fh:
@@ -535,6 +571,32 @@ class WorkspaceMemory:
             if m:
                 return m.group(1).strip()
         return ""
+
+    def last_user_requirement(self, extra: str = "") -> str:
+        """Requirement text: user hint, current Goal, last non-command session turn."""
+        bits: list[str] = []
+        note = (extra or "").strip()
+        if note and not note.startswith("/"):
+            bits.append(note)
+        goal = self.plan_goal().strip()
+        if goal and goal not in {"(none)", "none"} and goal not in bits:
+            bits.append(goal)
+        session = ""
+        if self.session_path.exists():
+            session = self.session_path.read_text(encoding="utf-8")
+        last = ""
+        for block in re.finditer(
+            r"^### user[^\n]*\n([\s\S]*?)(?=^### |\Z)",
+            session,
+            re.MULTILINE,
+        ):
+            body = (block.group(1) or "").strip()
+            if not body or body.startswith("/"):
+                continue
+            last = body
+        if last and last not in bits:
+            bits.append(last)
+        return "\n\n".join(bits).strip()
 
     @staticmethod
     def _action_from_match(action_raw: str, target: str) -> str:
@@ -1077,8 +1139,8 @@ class WorkspaceMemory:
             )
         return self.cap_todos(self.dedupe_todos(out))
 
-    def finalize_plan(self, text: str | None = None) -> str:
-        """Normalize, strip meta/junk, dedupe/cap, rewrite bad verifies, write plan.md."""
+    def render_finalized_plan(self, text: str | None = None) -> str:
+        """Normalize, strip meta/junk, dedupe/cap, rewrite bad verifies — no write."""
         raw = text if text is not None else self.read_plan()
         normalized = self.normalize_plan_markdown(raw)
         goal = self.plan_goal_from_text(normalized) or "(see todos)"
@@ -1089,13 +1151,17 @@ class WorkspaceMemory:
             normalized.splitlines(), require_section=True
         ) or self._todos_from_lines(normalized.splitlines(), require_section=False)
         augmented = self.augment_plan_todos(todos, goal=goal)
-        final = self._rewrite_plan_from_todos(
+        return self._rewrite_plan_from_todos(
             goal,
             augmented,
             strip_meta=True,
             done_summary=done_summary,
             extra_section=extra,
         )
+
+    def finalize_plan(self, text: str | None = None) -> str:
+        """Normalize, strip meta/junk, dedupe/cap, rewrite bad verifies, write plan.md."""
+        final = self.render_finalized_plan(text)
         self.write_plan(final)
         return final
 
@@ -1387,3 +1453,21 @@ class WorkspaceMemory:
             "todos_skipped": sum(1 for t in todos if t.skipped),
             "todos_total": len(todos),
         }
+
+    def format_todo_line(self, todo: TodoStep) -> str:
+        mark = "!" if todo.skipped else ("x" if todo.done else " ")
+        desc = f" — {todo.description}" if todo.description else ""
+        return f"{todo.number}. [{mark}] {todo.action} `{todo.target}`{desc}"
+
+    def format_todo_board(self) -> str:
+        """Checkbox list of every todo, including completed and skipped."""
+        todos = self.parse_todos()
+        p = self.progress_summary()
+        header = f"Todos {p.get('todos_done', 0)}/{p.get('todos_total', 0)}"
+        skipped = p.get("todos_skipped", 0)
+        if skipped:
+            header += f" (+{skipped} skipped)"
+        if not todos:
+            return f"{header}\n(no todos)"
+        body = "\n".join(self.format_todo_line(t) for t in todos)
+        return f"{header}\n{body}"

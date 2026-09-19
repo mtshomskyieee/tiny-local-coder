@@ -46,6 +46,7 @@ class Pipeline:
         self.gate = gate or ApprovalGate()
         self.runner = CommandRunner(self.memory, self.gate, self.settings)
         self._on_progress: ProgressCallback | None = None
+        self._trace_prefix: str = ""
         self.graph = self._build()
 
     def set_progress_callback(self, callback: ProgressCallback | None) -> None:
@@ -65,6 +66,30 @@ class Pipeline:
         action = verb or todo.action
         target = _short(todo.target, 56)
         return f"thinking … step {todo.number}/{total}: {action} `{target}`"
+
+    def _trace_todo(
+        self, todo: TodoStep, *, verb: str = "running", status: str | None = None
+    ) -> None:
+        """Live `workflow »` line for compound flows (e.g. /test)."""
+        if not self._trace_prefix:
+            return
+        total = self.memory.progress_summary().get("todos_total", "?")
+        target = _short(todo.target, 72)
+        if status:
+            self._notify(
+                f"{self._trace_prefix} » done {todo.number}/{total} [{status}]: "
+                f"{todo.action} `{target}`"
+            )
+            return
+        kind = " (shell)" if todo.action in {"run", "test"} else ""
+        self._notify(
+            f"{self._trace_prefix} » {verb} {todo.number}/{total}: "
+            f"{todo.action} `{target}`{kind}"
+        )
+
+    def _notify_todo_board(self) -> None:
+        """Ask the TUI to reprint the full todo list after a step changes."""
+        self._notify("todos » board")
 
     def _build(self):
         g: StateGraph = StateGraph(AgentState)
@@ -159,6 +184,7 @@ class Pipeline:
                 f"thinking … skipped {len(clones)} similar run todo(s)"
             )
         self.memory.clear_last_failure()
+        self._notify_todo_board()
         return step
 
     def _route_prep(self, state: AgentState) -> dict[str, Any]:
@@ -209,6 +235,7 @@ class Pipeline:
         result = run_coding_agent(self.memory, prompt)
         result["progress"] = self.memory.progress_summary()
         result["status"] = result.get("status") or "ok"
+        self._notify_todo_board()
         return result
 
     def _fix_node(self, state: AgentState) -> dict[str, Any]:
@@ -268,6 +295,7 @@ class Pipeline:
                 todo = self.memory.next_todo()
                 if todo and todo.action in {"run", "test"}:
                     self._notify(self._todo_status(todo, verb="retry"))
+                    self._trace_todo(todo, verb="retry")
                     retry = run_execution_step(
                         self.memory, self.runner, todo, state.get("prompt") or ""
                     )
@@ -276,6 +304,8 @@ class Pipeline:
                         f"— retry after fix —\n{retry.get('output', '')}"
                     )
                     retry_status = retry.get("status")
+                    self._trace_todo(todo, status=str(retry_status or "ok"))
+                    self._notify_todo_board()
                     result["last_command"] = retry.get("last_command") or ""
                     result["ran_shell"] = True
                     result["phase"] = retry.get("phase") or "executing"
@@ -397,6 +427,7 @@ class Pipeline:
             }
 
         self._notify(self._todo_status(todo))
+        self._trace_todo(todo)
         prompt = state.get("prompt") or ""
         if todo.action in {"create", "write", "refine"}:
             result = run_coding_step(self.memory, todo, prompt)
@@ -404,6 +435,8 @@ class Pipeline:
         else:
             result = run_execution_step(self.memory, self.runner, todo, prompt)
             result["ran_shell"] = True
+        self._trace_todo(todo, status=str(result.get("status") or "ok"))
+        self._notify_todo_board()
 
         result["progress"] = self.memory.progress_summary()
         result["output"] = (
@@ -523,7 +556,7 @@ class Pipeline:
         return result
 
     def invoke_workflow(
-        self, kind: Literal["review", "test", "review-fix"], prompt: str = "", **extra: Any
+        self, kind: Literal["review", "test", "review-fix", "fix-plan"], prompt: str = "", **extra: Any
     ) -> dict[str, Any]:
         """Convenience: /plan with a fixed workflow prompt, then /execute-plan."""
         from tinylocalcoder.agents.workflows import run_workflow

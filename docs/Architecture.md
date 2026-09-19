@@ -56,6 +56,7 @@ flowchart LR
   planR --> execR["invoke execute"]
   reviewFix["/review-fix"] --> planF["invoke plan"]
   planF --> execF["invoke execute"]
+  fixPlan["/fix-plan"] --> planX["invoke plan"]
   testCmd["/test"] --> planT["invoke plan"]
   planT --> execT["invoke execute"]
 ```
@@ -64,11 +65,12 @@ flowchart LR
 |----------|-------------------|------|
 | `/review` | Tool writes `manifest.txt` first, `/plan` from that list, tool writes per-file `review.md` | `/execute-plan` |
 | `/review-fix` | Parse `review.md` findings, `/plan` refine/fix todos (skip execute if none) | `/execute-plan` |
+| `/fix-plan` | Compare requirement vs `plan.md` + workspace gaps, rewrite todos | *(stop — user runs `/execute-plan`)* |
 | `/test` | Invent a **runnable test plan** as `plan.md` (find/run tests, or add a tiny smoke test) | `/execute-plan` |
 
-Optional trailing text is appended to the fixed prompt (`/review focus on src/`, `/review-fix only high`, `/test only unit`).
+Optional trailing text is appended to the fixed prompt (`/review focus on src/`, `/review-fix only high`, `/fix-plan start_service.sh`, `/test only unit`).
 
-API mirrors: `POST /v1/review`, `POST /v1/review-fix`, `POST /v1/test`.
+API mirrors: `POST /v1/review`, `POST /v1/review-fix`, `POST /v1/fix-plan`, `POST /v1/test`.
 
 ### Recovery and plan hygiene (during execute)
 
@@ -87,7 +89,7 @@ TUI toggles: `/auto-fix`, `/auto-skip`, `/auto-replan`.
 | Path | Role |
 |------|------|
 | `agents/thinking.py` | Plan agent (`PLAN_SYSTEM`) |
-| `agents/workflows.py` | `/review` + `/review-fix` + `/test` fixed prompts; `run_workflow` = plan then execute |
+| `agents/workflows.py` | `/review` + `/review-fix` + `/fix-plan` + `/test` prompts; `run_workflow` |
 | `tools/manifest.py` | Deterministic `manifest.txt` inventory for `/review` (skips archive/.index/meta) |
 | `tools/review.py` | Deterministic `review.md` + parse findings for `/review-fix` |
 | `memory/files.py` | Todo parse, `finalize_plan`, meta strip, validate/augment |
@@ -106,7 +108,7 @@ Workspace memory: `plan.md`, prototypes, `exec.log`, `ask.md`, `session.md`, `ma
 After `/plan`, [`finalize_plan()`](../src/tinylocalcoder/memory/files.py) always:
 
 1. Normalizes Goal + `## Todos`
-2. **Strips meta-like todos** (`reset-todo`, `skip-todo`, `review`, `review-fix`, `test`, `reset_todo_*.py`, …)
+2. **Strips meta-like todos** (`reset-todo`, `skip-todo`, `review`, `review-fix`, `fix-plan`, `test`, `reset_todo_*.py`, …)
 3. **Drops junk run targets** (not `python3` / `pytest` / `PYTHONPATH=…`) — e.g. bare `Define`
 4. **Rewrites bad FastAPI verifies**: `from db import db; db.selectall()` → one short `from db import app; … routes …` check
 5. **Caps runs**: at most one open `py_compile` and one open behavioral `-c`
