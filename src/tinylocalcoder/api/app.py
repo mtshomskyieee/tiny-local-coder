@@ -82,6 +82,10 @@ class ApiSession:
     def wait_briefly(self, timeout: float = 0.5) -> None:
         self._done.wait(timeout=timeout)
 
+    def is_busy(self) -> bool:
+        thread = self._run_thread
+        return bool(thread and thread.is_alive())
+
     def snapshot(self, mode: str) -> RunResponse:
         pending_list = self.gate.list_pending()
         pending = pending_list[0] if pending_list else None
@@ -221,6 +225,8 @@ def create_app(session: ApiSession | None = None) -> FastAPI:
     @app.post("/v1/workspace/clear")
     def clear_workspace() -> dict[str, Any]:
         """Same as TUI /clear-workspace: archive live files, blank plan/ask/session."""
+        if state.is_busy():
+            raise HTTPException(status_code=409, detail="A run is already in progress")
         try:
             dest = state.pipeline.memory.clear_workspace()
         except OSError as exc:

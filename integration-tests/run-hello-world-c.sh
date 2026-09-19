@@ -60,17 +60,35 @@ else:
 ' "$field" <<<"$json"
 }
 
+API_HTTP_CODE=0
+
 api_get() {
-  curl -sS --max-time 30 "$1"
+  local tmp
+  tmp="$(mktemp)"
+  API_HTTP_CODE="$(curl -sS --max-time 30 -o "$tmp" -w '%{http_code}' "$1" || true)"
+  cat "$tmp"
+  rm -f "$tmp"
 }
 
 api_post() {
   local path="$1"
   local body="$2"
-  curl -sS --max-time 90 \
+  local tmp
+  tmp="$(mktemp)"
+  API_HTTP_CODE="$(curl -sS --max-time 90 \
+    -o "$tmp" -w '%{http_code}' \
     -H "Content-Type: application/json" \
     -d "$body" \
-    "${API}${path}"
+    "${API}${path}" || true)"
+  cat "$tmp"
+  rm -f "$tmp"
+}
+
+run_finished() {
+  case "$1" in
+    ok|error|denied|failed) return 0 ;;
+    *) return 1 ;;
+  esac
 }
 
 cleanup() {
@@ -191,11 +209,23 @@ print(json.dumps({"prompt": sys.argv[1], "thinking_enabled": False}))
     fail "POST /v1/plan failed"
     return 1
   }
+  if [[ "$API_HTTP_CODE" != "200" ]]; then
+    fail "POST /v1/plan HTTP $API_HTTP_CODE: $body"
+    return 1
+  fi
   status="$(json_field "$body" "status" 2>/dev/null || true)"
   log "POST /v1/plan status=$status"
 
   while ((SECONDS < deadline)); do
-    if plan_has_todos && plan_mentions_hello; then
+    if [[ "$status" == "error" ]]; then
+      fail "plan run error: $(json_field "$body" "error" 2>/dev/null || echo "$body")"
+      return 1
+    fi
+    if run_finished "$status"; then
+      if ! plan_has_todos || ! plan_mentions_hello; then
+        fail "plan finished ($status) but plan.md has no hello-world create todo"
+        return 1
+      fi
       pass "plan.md has numbered todos and mentions hello-world.c"
       log "Writing canonical create-only plan (same bytes every run)…"
       write_canonical_plan
@@ -211,21 +241,12 @@ print(json.dumps({"prompt": sys.argv[1], "thinking_enabled": False}))
       pass "plan.md is the canonical create-only plan"
       return 0
     fi
-    if [[ "$status" == "error" ]]; then
-      fail "plan run error: $(json_field "$body" "error" 2>/dev/null || echo "$body")"
-      return 1
-    fi
     body="$(api_get "$API/v1/status" 2>/dev/null || true)"
     status="$(json_field "$body" "status" 2>/dev/null || true)"
     sleep 2
   done
 
-  if ! plan_has_todos; then
-    fail "plan.md has no numbered todos after ${PLAN_TIMEOUT_SEC}s"
-  fi
-  if ! plan_mentions_hello; then
-    fail "plan.md does not mention hello-world.c"
-  fi
+  fail "plan still $status after ${PLAN_TIMEOUT_SEC}s (need ok/error before execute)"
   return 1
 }
 
@@ -242,6 +263,14 @@ wait_for_execute() {
     fail "POST /v1/execute failed"
     return 1
   }
+  if [[ "$API_HTTP_CODE" == "409" ]]; then
+    fail "POST /v1/execute HTTP 409 (plan still running?): $body"
+    return 1
+  fi
+  if [[ "$API_HTTP_CODE" != "200" ]]; then
+    fail "POST /v1/execute HTTP $API_HTTP_CODE: $body"
+    return 1
+  fi
   status="$(json_field "$body" "status" 2>/dev/null || true)"
   log "POST /v1/execute status=$status"
 
@@ -279,13 +308,18 @@ print(json.dumps({"command_id": sys.argv[1], "decision": "allow_all"}))
       fail "execute run error: $(json_field "$body" "error" 2>/dev/null || echo "$body")"
       return 1
     fi
-    if [[ "$status" == "ok" || "$status" == "denied" || "$status" == "failed" ]]; then
+    if run_finished "$status"; then
       break
     fi
     body="$(api_get "$API/v1/status" 2>/dev/null || true)"
     status="$(json_field "$body" "status" 2>/dev/null || true)"
     sleep 2
   done
+
+  if ! run_finished "$status"; then
+    fail "execute still $status after ${EXECUTE_TIMEOUT_SEC}s (not clearing while coder may write)"
+    return 1
+  fi
 
   if hello_file_ok; then
     pass "hello-world.c exists and looks like a hello-world program"
@@ -306,6 +340,14 @@ clear_workspace_via_api() {
     fail "POST /v1/workspace/clear failed"
     return 1
   }
+  if [[ "$API_HTTP_CODE" == "409" ]]; then
+    fail "POST /v1/workspace/clear HTTP 409 (run still in progress): $body"
+    return 1
+  fi
+  if [[ "$API_HTTP_CODE" != "200" ]]; then
+    fail "POST /v1/workspace/clear HTTP $API_HTTP_CODE: $body"
+    return 1
+  fi
   status="$(json_field "$body" "status" 2>/dev/null || true)"
   archive="$(json_field "$body" "archive" 2>/dev/null || true)"
   if [[ "$status" != "ok" ]]; then

@@ -87,20 +87,22 @@ A create-only plan should not hit the shell gate. If status is still
    for a first model pull).
 3. **Plan:** `POST /v1/plan` with a **coding-only** prompt (create
    `hello-world.c`, no compile/run) and `"thinking_enabled": false`. Poll
-   `GET /v1/status` and `workspace/plan.md`.
-4. **Expect a plan:** fail if `plan.md` is still the empty template (no
-   numbered `1. [ ]` / `[x]` todos). Require `hello-world.c` in the plan
-   text. Then write the **same canonical create-only `plan.md`** every run
-   (one `create hello-world.c` todo).
+   `GET /v1/status` until the run is **finished** (`ok` / `error` / `denied` /
+   `failed`). Do not start execute while status is `running` (that is a 409).
+4. **Expect a plan:** after the plan run is done, fail if `plan.md` has no
+   numbered hello-world todo. Then write the **same canonical create-only
+   `plan.md`** every run (one `create hello-world.c` todo). Writing only after
+   the planner thread exits so it cannot overwrite the fixture.
 5. **Execute:** `POST /v1/execute` walks the create todo and writes the file.
-   Do not compile. Auto-fix is off so a failed or missing run cannot inject
-   `gcc` / `./hello-world`. Auto-approve only if a gate appears. Treat
-   `error` or timeout as failure.
+   Fail immediately on HTTP 409. Poll until execute is **finished**, then
+   assert `hello-world.c`. Do not treat a non-empty file as done while status
+   is still `running`.
 6. **Expect `workspace/hello-world.c`:** file exists, is non-empty, and
    contains `hello` (case-insensitive) or a `printf` / `puts`. Success is
    the source file — not a binary.
-7. **`/clear-workspace`:** `POST /v1/workspace/clear` moves the test files
-   into `workspace/archive/<timestamp>` and blanks `plan.md`. Fail if
+7. **`/clear-workspace`:** only after execute has finished. `POST
+   /v1/workspace/clear` returns 409 if a run is still alive. On success it
+   archives into `workspace/archive/<timestamp>` and blanks `plan.md`. Fail if
    `hello-world.c` is still in the live workspace.
 8. **Shutdown** with `./stop-service.sh` from the EXIT trap (always stop what
    we started).
@@ -117,7 +119,12 @@ Each run is meant to be interchangeable:
 
 - Stop leftover compose first; stop again on EXIT (idempotent cleanup).
 - `AUTO_FIX=false` and `AUTO_REPLAN=false` so recovery cannot add compile todos.
-- After `/plan` succeeds, execute always sees the same canonical `plan.md`.
+- After `/plan` **finishes** (not merely after `plan.md` looks valid), execute
+  always sees the same canonical `plan.md`.
+- Execute must finish before `/clear-workspace`. The API refuses clear while a
+  run thread is alive (409).
+- HTTP helpers record the status code so 409 is not treated as an in-flight
+  snapshot.
 - Compile/run gates (`gcc`, `clang`, `./hello-world`) are **denied**.
 - End with `/clear-workspace` (`POST /v1/workspace/clear`) so test files are
   archived, not left in the live workspace.
