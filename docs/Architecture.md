@@ -182,6 +182,28 @@ cost is a property of the architecture: `kv_bytes_per_token` is
 `num_ctx x kv_bytes_per_token x parallel_slots`. For `qwen2.5:3b` that is
 36 KB per token — 72 MB at 2048, 360 MB at 10240.
 
+The two catalog models are not comparable here, and the difference is not the
+one the window sizes suggest:
+
+| | trained window | KV per token | usable on an 11 GB host |
+|---|---|---|---|
+| `qwen2.5:3b` | 32,768 | 36 KB | the full 32k |
+| `qwen3.5:4b` | 262,144 | 128 KB | about 16k |
+
+qwen3.5 has 8x the window, but each token costs 3.5x as much cache and the
+weights are twice the size — so the bigger window is the one you can afford
+less of. Both figures come from the published `config.json`
+(`2 x layers x kv_heads x head_dim x 2 bytes`), not from estimates.
+
+Because the worthwhile sizes differ per model, the ladder is itself a catalog
+entry — `ctx_options` in `config.toml` — rather than a list in the shell. The
+picker prices every entry against the host and marks the ones that do not fit:
+
+```
+   5) 16384   2.0 GB KV, ~11 GB total
+   6) 20480   2.5 GB KV, ~12 GB total     over 11 GB host
+```
+
 2048 is the floor the agent prompts were sized against, not a ceiling to
 defend. `./start-service.sh` prices each option against the host's RAM before
 you pick it, and probes the model afterwards for time-to-first-token and

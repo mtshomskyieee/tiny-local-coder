@@ -11,10 +11,16 @@ if [[ -z "${ROOT:-}" ]]; then
   return 1 2>/dev/null || exit 1
 fi
 
-# 2048 is the floor the agent prompts were sized against; the rest are the
-# sizes worth trying on a CPU-only host before the KV cache starts to matter.
+# The ladder comes from the active model's ctx_options in config.toml, because
+# the sizes worth offering depend on the model: qwen2.5:3b tops out at its
+# 32768 trained window, while qwen3.5:4b has 256K to climb. 2048 is the floor
+# the agent prompts were sized against and is always first.
 tlc_ctx_options() {
-  printf '%s\n' 2048 4096 8192 10240 16384 20480 32768 65536
+  if [[ -n "${CTX_OPTIONS:-}" ]]; then
+    printf '%s\n' $CTX_OPTIONS
+    return 0
+  fi
+  printf '%s\n' 2048 4096 8192 10240 16384 20480 32768
 }
 
 tlc_current_ctx() {
@@ -130,18 +136,24 @@ tlc_prompt_ctx() {
       beyond="  past trained ${ceiling}"
     fi
     budget=""
+    local fits="" kv_txt total
     if [[ "$per_copy" =~ ^[0-9]+$ ]] && (( per_copy > 0 )) && [[ -n "$kv" ]]; then
-      budget="$(( per_copy * loaded + acap ))"
-      budget="$(printf '~%s GB + %s MB KV' "$budget" "$kv")"
-      if [[ -n "$host" ]]; then
-        budget="$budget of ${host} GB"
+      if (( kv >= 1024 )); then
+        kv_txt="$(awk -v m="$kv" 'BEGIN { printf "%.1f GB", m / 1024 }')"
+      else
+        kv_txt="${kv} MB"
+      fi
+      total=$(( per_copy * loaded + acap + (kv + 1023) / 1024 ))
+      budget="$(printf '%s KV, ~%s GB total' "$kv_txt" "$total")"
+      if [[ -n "$host" ]] && (( total > host )); then
+        fits="  over ${host} GB host"
       fi
     fi
     if [[ "$opt" == "$current" ]]; then
       default_n="$i"
-      printf '  %d) %-6s %-30s [current]%s\n' "$i" "$opt" "$budget" "$beyond"
+      printf '  %2d) %-7s %-26s [current]%s%s\n' "$i" "$opt" "$budget" "$beyond" "$fits"
     else
-      printf '  %d) %-6s %-30s%s\n' "$i" "$opt" "$budget" "$beyond"
+      printf '  %2d) %-7s %-26s%s%s\n' "$i" "$opt" "$budget" "$beyond" "$fits"
     fi
   done < <(tlc_ctx_options)
   n="$i"
