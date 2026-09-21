@@ -130,3 +130,16 @@ def test_collect_includes_cpp_makefile_and_popular_langs(tmp_path: Path) -> None
     body = mem.read_prototype("manifest.txt")
     assert "src/foo.cpp" in body
     assert "Makefile" in body
+
+
+def test_manifest_skips_build_products(memory: WorkspaceMemory) -> None:
+    """Compiling in the workspace must not pollute the review manifest."""
+    for rel, body in (
+        ("square_root.cpp", "int main(){return 0;}\n"),
+        ("Makefile", "all:\n\tg++ -o square_root square_root.cpp\n"),
+        ("square_root", "ELF-ish binary\n"),
+        ("square_root.o", "object\n"),
+        ("a.out", "binary\n"),
+    ):
+        memory.write_prototype(rel, body)
+    assert collect_manifest_paths(memory.root) == ["Makefile", "square_root.cpp"]

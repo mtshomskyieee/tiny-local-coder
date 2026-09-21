@@ -237,7 +237,7 @@ def _review_python(path: str, text: str, *, has_tests: bool) -> FileReview:
         add("high", "Smoke assertion is a no-op (`assert True`) — test real behavior.")
     if (
         path.endswith(".py")
-        and not is_test
+        and not is_test  # Python-only: _review_python is the Python reviewer
         and not path.endswith("__init__.py")
         and not has_tests
         and ("src/" in path.replace("\\", "/") or path.count("/") == 0)
@@ -458,9 +458,56 @@ def _review_cpp(path: str, text: str) -> FileReview:
     for m in _TODO_RE.finditer(text):
         add("low", f"Leftover marker `{m.group(1)}`.", _line_of(text, m.start()))
 
+    is_header = Path(path).suffix.lower() in {".h", ".hh", ".hpp", ".hxx"}
+    lines = text.splitlines()
+
+    if is_header:
+        if not re.search(r"^\s*#pragma\s+once", text, re.MULTILINE) and not re.search(
+            r"^\s*#ifndef\s+\w+\s*\n\s*#define\s+\w+", text, re.MULTILINE
+        ):
+            add("medium", "Header has no include guard (`#pragma once` or #ifndef).")
+        m = re.search(r"^\s*using\s+namespace\s+[\w:]+\s*;", text, re.MULTILINE)
+        if m:
+            add(
+                "high",
+                "`using namespace` in a header leaks into every translation unit.",
+                _line_of(text, m.start()),
+            )
+
+    main_m = re.search(r"^\s*int\s+main\s*\(", text, re.MULTILINE)
+    if main_m:
+        body = text[main_m.start():]
+        if not re.search(r"\breturn\b", body):
+            add(
+                "low",
+                "`main` has no explicit return (implicit 0 is legal but unclear).",
+                _line_of(text, main_m.start()),
+            )
+        # argv[n] read without checking argc is the classic crash in these programs
+        argv_m = re.search(r"\bargv\s*\[\s*[1-9]", body)
+        if argv_m and not re.search(r"\bargc\b\s*[<>=!]", body):
+            add(
+                "high",
+                "Reads `argv[1]` without checking `argc` — crashes when run with no arguments.",
+                _line_of(text, main_m.start() + argv_m.start()),
+            )
+
+    for pattern, sev, msg in (
+        (r"\b(?:std::)?s(?:qrt|in|cos|tan|pow)\s*\(", "medium",
+         "Uses a <cmath> function; make sure `#include <cmath>` is present."),
+    ):
+        m = re.search(pattern, text)
+        if m and "cmath" not in text and "math.h" not in text:
+            add(sev, msg, _line_of(text, m.start()))
+
+    if any(
+        re.search(rf"\b{fn}\s*\(", text) for fn in ("gets", "strcpy", "sprintf")
+    ):
+        add("high", "Uses an unbounded string function (gets/strcpy/sprintf).")
+
     if not rev.findings:
         rev.findings.append(
-            Finding("info", f"{len(text.splitlines())} lines — no C/C++ heuristic issues flagged.")
+            Finding("info", f"{len(lines)} lines — no C/C++ heuristic issues flagged.")
         )
         rev.summary = "OK"
     else:
@@ -473,6 +520,7 @@ def _test_paths(all_paths: list[str]) -> set[str]:
         p.replace("\\", "/")
         for p in all_paths
         if Path(p).name.startswith("test_")
+        or Path(p).stem.endswith(("_test", "_tests"))
         or "/tests/" in f"/{p.replace(chr(92), '/')}/"
         or p.startswith("tests/")
     }

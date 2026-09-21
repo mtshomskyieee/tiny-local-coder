@@ -117,3 +117,70 @@ def test_worst_orders_severities() -> None:
         all_paths=["b.py", "tests/test_b.py"],
     )
     assert rev.worst == "high", "a high finding must outrank the low TODO note"
+
+
+class TestCppReview:
+    """`_review_cpp` was a TODO-marker scan; the C++ session it was meant to
+    help got a review with zero findings."""
+
+    def _messages(self, path: str, text: str) -> list[str]:
+        return [f.message for f in review_file(path, text, all_paths=[]).findings]
+
+    def test_unchecked_argv_is_high(self) -> None:
+        msgs = self._messages(
+            "square_root.cpp",
+            "#include <cmath>\n"
+            "int main(int argc, char** argv) {\n"
+            "    double x = atof(argv[1]);\n"
+            "    return 0;\n"
+            "}\n",
+        )
+        assert any("argv[1]" in m and "argc" in m for m in msgs)
+
+    def test_argc_check_silences_it(self) -> None:
+        msgs = self._messages(
+            "square_root.cpp",
+            "#include <cmath>\n"
+            "int main(int argc, char** argv) {\n"
+            "    if (argc < 2) return 1;\n"
+            "    double x = atof(argv[1]);\n"
+            "    return 0;\n"
+            "}\n",
+        )
+        assert not any("argc" in m for m in msgs)
+
+    def test_missing_cmath_include(self) -> None:
+        msgs = self._messages(
+            "square_root.cpp", "int main() {\n    return sqrt(4.0);\n}\n"
+        )
+        assert any("cmath" in m for m in msgs)
+
+    def test_header_without_include_guard(self) -> None:
+        msgs = self._messages("util.hpp", "int f();\n")
+        assert any("include guard" in m for m in msgs)
+        assert "pragma once" not in " ".join(self._messages("ok.hpp", "#pragma once\nint f();\n"))
+
+    def test_using_namespace_in_a_header_is_high(self) -> None:
+        rev = review_file(
+            "util.hpp", "#pragma once\nusing namespace std;\nint f();\n", all_paths=[]
+        )
+        assert any(
+            f.severity == "high" and "using namespace" in f.message
+            for f in rev.findings
+        )
+
+    def test_using_namespace_in_a_source_file_is_fine(self) -> None:
+        msgs = self._messages(
+            "main.cpp", "#include <cmath>\nusing namespace std;\nint main(){return 0;}\n"
+        )
+        assert not any("using namespace" in m for m in msgs)
+
+    def test_unbounded_string_functions(self) -> None:
+        msgs = self._messages("a.c", "int main(){ char b[8]; gets(b); return 0; }\n")
+        assert any("unbounded" in m for m in msgs)
+
+    def test_clean_file_gets_an_info_note_only(self) -> None:
+        rev = review_file(
+            "ok.cpp", "#include <cmath>\nint main() { return 0; }\n", all_paths=[]
+        )
+        assert [f.severity for f in rev.findings] == ["info"]

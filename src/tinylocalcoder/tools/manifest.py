@@ -179,7 +179,11 @@ def _should_skip(rel: Path) -> bool:
         return True
     if name in REVIEW_ARTIFACTS:
         return True
-    if name.endswith((".pyc", ".pyo", ".so", ".dylib", ".egg", ".whl")):
+    # Build products, not source. Extensionless binaries (`square_root`) are
+    # already excluded by _is_source_like.
+    if name.endswith(
+        (".pyc", ".pyo", ".so", ".dylib", ".egg", ".whl", ".o", ".a", ".out", ".obj", ".exe")
+    ):
         return True
     if name == ".DS_Store":
         return True
