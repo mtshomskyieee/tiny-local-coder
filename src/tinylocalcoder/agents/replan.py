@@ -12,9 +12,11 @@ from tinylocalcoder.memory.files import (
     REPLAN_OPEN_CAP,
     TodoStep,
     WorkspaceMemory,
+    is_valid_run_command,
     looks_fastapi_goal,
     strip_placeholder_path,
 )
+from tinylocalcoder.toolchains import detect_toolchains, toolchain_for_path
 
 _MOD_NOT_FOUND = re.compile(
     r"ModuleNotFoundError:\s+No module named ['\"]([^'\"]+)['\"]",
@@ -39,8 +41,9 @@ Example:
 1. [ ] run `PYTHONPATH=path/to python3 -c "import db"` — expect success
 
 Rules:
-- Match imports to real workspace file paths from the file list.
-- Prefer one short python3 -c or one refine of an existing .py.
+- Match imports/paths to real workspace files from the file list.
+- Prefer ONE short verify command, or one refine of an existing file.
+- Use the language the workspace is already written in (python3 -c, make, ./binary, …).
 - Never invent path/to/ placeholders. Never repeat completed work.
 """
 
@@ -93,6 +96,53 @@ def _verify_todo_for_module(
         done=False,
         raw_line="",
     )
+
+
+def _workspace_sources(memory: WorkspaceMemory) -> list[str]:
+    """Candidate source files, shallowest first, skipping archives and indexes."""
+    files = [
+        f
+        for f in memory.list_files()
+        if not f.startswith("archive/")
+        and "/.index/" not in f"/{f}/"
+        and not f.endswith("__init__.py")
+        and toolchain_for_path(f) is not None
+    ]
+    files.sort(key=lambda p: (p.count("/"), len(p)))
+    return files
+
+
+def _fallback_verify_todo(memory: WorkspaceMemory, goal: str) -> TodoStep | None:
+    """A short verify for whatever language the workspace actually contains.
+
+    Previously this only ever produced `python3 -c "import …"`, so a replan in
+    a C++ workspace emitted a Python command that could not pass.
+    """
+    sources = _workspace_sources(memory)
+    if not sources:
+        return None
+    py = [f for f in sources if f.endswith(".py")]
+    if py:
+        rel = py[0]
+        return _verify_todo_for_module(
+            module=Path(rel).stem,
+            rel_path=rel,
+            fastapi=looks_fastapi_goal(goal),
+            has_app=_file_has_app(memory, rel),
+        )
+    for tc in detect_toolchains(sources):
+        owned = [f for f in sources if tc.owns_path(f)]
+        cmd = tc.compile_cmd(owned) if (tc.compile_cmd and owned) else None
+        if cmd:
+            return TodoStep(
+                number=1,
+                action="run",
+                target=cmd,
+                description="expect success",
+                done=False,
+                raw_line="",
+            )
+    return None
 
 
 def try_deterministic_replan(
@@ -212,7 +262,7 @@ def _parse_open_todo_lines(text: str) -> list[TodoStep]:
         elif action_raw in {"create", "write"}:
             action = "create"
         else:
-            action = "run" if target.startswith("python") else "create"
+            action = "run" if is_valid_run_command(target) else "create"
         if action in {"create", "refine"}:
             target = strip_placeholder_path(target)
         todos.append(
@@ -324,27 +374,11 @@ def run_replan_agent(
             mode = "llm"
             detail = "tiny LLM open-todo rewrite"
         else:
-            # Last-resort smoke on any existing .py
-            py_files = [
-                f
-                for f in memory.list_files()
-                if f.endswith(".py")
-                and not f.startswith("archive/")
-                and not f.endswith("__init__.py")
-            ]
-            py_files.sort(key=lambda p: (p.count("/"), len(p)))
-            if py_files:
-                rel = py_files[0]
-                open_todos = [
-                    _verify_todo_for_module(
-                        module=Path(rel).stem,
-                        rel_path=rel,
-                        fastapi=looks_fastapi_goal(goal),
-                        has_app=_file_has_app(memory, rel),
-                    )
-                ]
+            fallback = _fallback_verify_todo(memory, goal)
+            if fallback is not None:
+                open_todos = [fallback]
                 mode = "fallback"
-                detail = "spam/empty LLM discarded; smoke import fallback"
+                detail = "spam/empty LLM discarded; smoke verify fallback"
             else:
                 open_todos = [
                     TodoStep(
@@ -357,7 +391,7 @@ def run_replan_agent(
                     )
                 ]
                 mode = "fallback"
-                detail = "no python files; noop verify"
+                detail = "no source files; noop verify"
 
     final = memory.write_slim_replan_plan(goal, done_summary, open_todos)
     memory.append_exec_log(

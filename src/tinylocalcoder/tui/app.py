@@ -70,6 +70,8 @@ _META_COMMANDS = set(META_TODO_NAMES) | {
     "kill-procs",
     "auto-replan",
     "autoreplan",
+    "auto-install",
+    "autoinstall",
 }
 
 # Mode words that are also meta when used as /commands, but must NOT steal
@@ -225,6 +227,8 @@ _HELP = """[b]Commands[/b]
   [b]/auto-skip on|off[/] — skip failed todos after fix and continue plan
   [b]/auto-replan[/]     — show auto-replan status (on by default)
   [b]/auto-replan on|off[/] — rewrite open todos when a fix cannot repair the plan
+  [b]/auto-install[/]    — show auto-install status (on by default)
+  [b]/auto-install on|off[/] — apt-get a missing language toolchain, then retry
   [b]/skip-todo N[/]     — mark todo N as skipped ([!]) so execute can move on
   [b]/reset-todo N[/]    — reopen skipped todo N ([!] → [ ])
   [b]/reset-all-skipped[/] — reopen every skipped todo ([!] → [ ])
@@ -310,7 +314,8 @@ class TinyLocalCoderTui(App[None]):
         self._startup_automation_note = (
             f"autofix={'on' if self.settings.auto_fix else 'off'}  "
             f"autoskip={'on' if self.settings.auto_skip else 'off'}  "
-            f"autoreplan={'on' if self.settings.auto_replan else 'off'}"
+            f"autoreplan={'on' if self.settings.auto_replan else 'off'}  "
+            f"autoinstall={'on' if self.settings.auto_install else 'off'}"
         )
 
     def _on_pipeline_progress(self, message: str) -> None:
@@ -404,6 +409,7 @@ class TinyLocalCoderTui(App[None]):
             f"autofix={'on' if self.settings.auto_fix else 'off'}  "
             f"autoskip={'on' if self.settings.auto_skip else 'off'}  "
             f"autoreplan={'on' if self.settings.auto_replan else 'off'}  "
+            f"autoinstall={'on' if self.settings.auto_install else 'off'}  "
             f"thinking={'on' if self.settings.thinking_enabled else 'off'}"
         )
 
@@ -726,6 +732,26 @@ class TinyLocalCoderTui(App[None]):
                 log.write("Toggle: [cyan]/auto-replan on[/] | [cyan]/auto-replan off[/]")
             else:
                 log.write("[red]Usage:[/] /auto-replan [on|off|status]")
+            self._refresh_status()
+            return True
+        if cmd in {"auto-install", "autoinstall"}:
+            arg = (rest or "").strip().lower()
+            if arg in {"on", "enable", "true", "1"}:
+                self.settings.auto_install = True
+                log.write(
+                    "[green]/auto-install on[/] — apt-get a missing toolchain and retry."
+                )
+            elif arg in {"off", "disable", "false", "0"}:
+                self.settings.auto_install = False
+                log.write(
+                    "[yellow]/auto-install off[/] — a missing compiler will be reported, not installed."
+                )
+            elif arg in {"", "status"}:
+                state = "on" if self.settings.auto_install else "off"
+                log.write(f"[b]auto-install:[/b] {state}")
+                log.write("Toggle: [cyan]/auto-install on[/] | [cyan]/auto-install off[/]")
+            else:
+                log.write("[red]Usage:[/] /auto-install [on|off|status]")
             self._refresh_status()
             return True
         if cmd == "skip-todo":

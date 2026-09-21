@@ -34,6 +34,14 @@ if ! docker volume inspect "$VOLUME_NAME" >/dev/null 2>&1; then
   docker volume create "$VOLUME_NAME" >/dev/null
 fi
 
+# Toolchains the agent apt-installed at runtime are recorded here; feed them
+# back into the image build so a rebuild does not lose them.
+if [[ -s workspace/.toolchains ]]; then
+  EXTRA_APT_PACKAGES="$(tr -s '\n' ' ' < workspace/.toolchains | xargs)"
+  export EXTRA_APT_PACKAGES
+  echo "Baking in recorded toolchains: $EXTRA_APT_PACKAGES"
+fi
+
 BUILD=1
 DETACH=1
 for arg in "$@"; do
