@@ -30,6 +30,10 @@ class Settings(BaseSettings):
     temperature: float = 0.2
     max_chunk_chars: int = 1200
     retrieve_top_k: int = 3
+    # Ceilings for the workspace chunk index. A 3B model reads a handful of
+    # chunks; anything past these bounds is memory spent to no purpose.
+    max_index_file_bytes: int = 262_144
+    max_index_total_chars: int = 4_194_304
 
 
 @lru_cache
