@@ -14,7 +14,7 @@ fi
 # 2048 is the floor the agent prompts were sized against; the rest are the
 # sizes worth trying on a CPU-only host before the KV cache starts to matter.
 tlc_ctx_options() {
-  printf '%s\n' 2048 4096 8192 10240 16384 32768
+  printf '%s\n' 2048 4096 8192 10240 16384 20480 32768 65536
 }
 
 tlc_current_ctx() {
@@ -58,8 +58,12 @@ tlc_save_ctx() {
   fi
   local ceiling="${MAX_CTX:-0}"
   if [[ "$ceiling" =~ ^[0-9]+$ ]] && (( ceiling > 0 && value > ceiling )); then
-    echo "error: $value exceeds this model's max_ctx of $ceiling" >&2
-    return 1
+    # Not an error: Ollama will honour the larger window. It is beyond what the
+    # model was trained on, and Ollama applies no rope/YaRN scaling on its own,
+    # so coherence degrades past this point even though memory is fine.
+    printf 'note: %s is past %s, this model'"'"'s trained context. It will run,\n' \
+      "$value" "$ceiling" >&2
+    printf '      but quality falls off beyond the trained window.\n' >&2
   fi
   config="$ROOT/config.toml"
   tmp="$(mktemp "${TMPDIR:-/tmp}/tlc-ctx.XXXXXX")"
@@ -119,11 +123,12 @@ tlc_prompt_ctx() {
   i=0
   default_n=1
   while IFS= read -r opt; do
-    if [[ "$ceiling" =~ ^[0-9]+$ ]] && (( ceiling > 0 && opt > ceiling )); then
-      continue
-    fi
     i=$((i + 1))
     kv="$(tlc_kv_mb "$opt")"
+    local beyond=""
+    if [[ "$ceiling" =~ ^[0-9]+$ ]] && (( ceiling > 0 && opt > ceiling )); then
+      beyond="  past trained ${ceiling}"
+    fi
     budget=""
     if [[ "$per_copy" =~ ^[0-9]+$ ]] && (( per_copy > 0 )) && [[ -n "$kv" ]]; then
       budget="$(( per_copy * loaded + acap ))"
@@ -134,9 +139,9 @@ tlc_prompt_ctx() {
     fi
     if [[ "$opt" == "$current" ]]; then
       default_n="$i"
-      printf '  %d) %-6s %-30s [current]\n' "$i" "$opt" "$budget"
+      printf '  %d) %-6s %-30s [current]%s\n' "$i" "$opt" "$budget" "$beyond"
     else
-      printf '  %d) %-6s %s\n' "$i" "$opt" "$budget"
+      printf '  %d) %-6s %-30s%s\n' "$i" "$opt" "$budget" "$beyond"
     fi
   done < <(tlc_ctx_options)
   n="$i"
@@ -159,9 +164,6 @@ tlc_prompt_ctx() {
   if [[ "$choice" =~ ^[0-9]+$ ]] && (( choice >= 1 && choice <= n )); then
     i=0
     while IFS= read -r opt; do
-      if [[ "$ceiling" =~ ^[0-9]+$ ]] && (( ceiling > 0 && opt > ceiling )); then
-        continue
-      fi
       i=$((i + 1))
       if (( i == choice )); then
         tlc_save_ctx "$opt" && echo "Saved num_ctx = $opt to config.toml"

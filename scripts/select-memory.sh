@@ -241,6 +241,22 @@ tlc_memory_summary() {
     if [[ -n "$host" ]]; then
       printf '  budget         ~%s GB of %s GB  (%s x %s GB/copy + KV + app)\n' \
         "$budget" "$host" "$copies" "$per_copy"
+      # A cap below the budget is the more confusing failure: where the
+      # cgroup is enforced the container is killed with no explanation, and
+      # where it is not the warning above is the one that matters.
+      local ocap_gb
+      ocap_gb="$(tlc_size_to_gb "$ocap")"
+      if (( ocap_gb > 0 && budget > ocap_gb )); then
+        echo
+        printf 'warning: budget ~%s GB exceeds OLLAMA_MEM_LIMIT of %s.\n' \
+          "$budget" "$ocap" >&2
+        if [[ "$enforced" == "yes" ]]; then
+          printf '         That limit is enforced here, so Ollama will be OOM-killed.\n' >&2
+          printf '         Raise OLLAMA_MEM_LIMIT in .env or pick a smaller context.\n' >&2
+        else
+          printf '         The limit is not enforced here, so it will not bite yet.\n' >&2
+        fi
+      fi
       if (( budget > host )); then
         echo
         printf 'warning: this profile budgets more memory (~%s GB) than the host has (%s GB).\n' \
