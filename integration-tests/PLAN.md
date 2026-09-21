@@ -11,7 +11,7 @@ Runner: [`run-hello-world-c.sh`](run-hello-world-c.sh)
 ```
 
 Safe to run again: each invocation stops any leftover suite, resets artifacts,
-uses the same create-only plan after `/plan`, then restores `./workspace`.
+uses the same canonical build-and-run plan after `/plan`, then restores `./workspace`.
 
 Not wired into `./run-tests.sh` or GitHub unit CI (needs Docker, Ollama,
 ~12 GB RAM, and a long runtime).
@@ -22,16 +22,24 @@ Protect this path:
 
 1. Start the suite with no human input.
 2. Ask for a C file `hello-world.c` that prints hello world (**coding only**).
-3. Expect a real plan in `workspace/plan.md`, then replace it with the
-   **canonical create-only plan** (one `create hello-world.c` todo).
-4. Execute the create todo only.
-5. Expect `workspace/hello-world.c`. Do not compile or run the program.
+3. Expect a real plan in `workspace/plan.md` that has, of its own accord, a
+   `gcc`/`make` compile todo and a `./hello-world` run todo. Then replace it
+   with the **canonical build-and-run plan** so the execute stage sees the same
+   bytes every run.
+4. Execute all three todos, approving the compile and run gates.
+5. Expect `workspace/hello-world.c`, an executable `workspace/hello-world`,
+   every todo marked `[x]` (no `[!]` skips), and no "junk run command" line in
+   `exec.log`.
 6. `POST /v1/workspace/clear` (same as TUI `/clear-workspace`).
 7. Stop the suite that was started.
 8. Exit `0` if every check passed, else `1`.
 
-`PLAN_SYSTEM` stays Python-centric on purpose. If the planner never emits
-`hello-world.c`, this test should fail.
+This test used to force a create-only plan and actively *deny* any `gcc` gate,
+because the planner was Python-centric and could not produce a working C plan:
+`gcc` was not in the run-command allowlist, so `finalize_plan` dropped every
+build todo. Now that languages come from `toolchains.py`, the compile step is
+the point of the test. If the planner emits no build todo, or the binary is
+never produced, this test should fail.
 
 ## Sequence
 
@@ -50,7 +58,7 @@ sequenceDiagram
     Script->>API: GET /v1/status
     Script->>WS: assert plan.md has todos
   end
-  Script->>WS: write canonical create-only plan
+  Script->>WS: write canonical build-and-run plan
   Script->>API: POST /v1/execute
   loop until file or timeout
     Script->>API: GET /v1/status
@@ -72,9 +80,10 @@ sequenceDiagram
 `GET /v1/status` returns the same `RunResponse` snapshot for the last mode so
 the script can keep polling.
 
-A create-only plan should not hit the shell gate. If status is still
-`pending_approval`, the script posts `POST /v1/execute/approve` with
-`decision: "allow_all"` so a leaked run todo cannot hang the test.
+The compile and run todos do hit the shell gate. The script posts `POST
+/v1/execute/approve` with `decision: "allow_all"` for every pending command;
+earlier revisions denied anything matching `gcc|clang|compile`, which is
+exactly the behaviour this test now exists to prove unnecessary.
 
 ## Script steps
 
@@ -90,16 +99,18 @@ A create-only plan should not hit the shell gate. If status is still
    `GET /v1/status` until the run is **finished** (`ok` / `error` / `denied` /
    `failed`). Do not start execute while status is `running` (that is a 409).
 4. **Expect a plan:** after the plan run is done, fail if `plan.md` has no
-   numbered hello-world todo. Then write the **same canonical create-only
-   `plan.md`** every run (one `create hello-world.c` todo). Writing only after
-   the planner thread exits so it cannot overwrite the fixture.
-5. **Execute:** `POST /v1/execute` walks the create todo and writes the file.
-   Fail immediately on HTTP 409. Poll until execute is **finished**, then
-   assert `hello-world.c`. Do not treat a non-empty file as done while status
-   is still `running`.
-6. **Expect `workspace/hello-world.c`:** file exists, is non-empty, and
-   contains `hello` (case-insensitive) or a `printf` / `puts`. Success is
-   the source file — not a binary.
+   numbered hello-world todo, **or no `gcc`/`make` compile todo and
+   `./hello-world` run todo** — the planner must reach that shape unaided.
+   Then write the **same canonical build-and-run `plan.md`** every run
+   (create, compile, run). Writing only after the planner thread exits so it
+   cannot overwrite the fixture.
+5. **Execute:** `POST /v1/execute` walks all three todos, approving each gate.
+   Fail immediately on HTTP 409. Poll until execute is **finished**. Do not
+   treat a non-empty file as done while status is still `running`.
+6. **Expect a working program:** `hello-world.c` exists, is non-empty and
+   contains `hello` / `printf` / `puts`; `hello-world` exists and is
+   executable; every todo is `[x]` with no `[!]` skips; and `exec.log` has no
+   `junk run command` line.
 7. **`/clear-workspace`:** only after execute has finished. `POST
    /v1/workspace/clear` returns 409 if a run is still alive. On success it
    archives into `workspace/archive/<timestamp>` and blanks `plan.md`. Fail if

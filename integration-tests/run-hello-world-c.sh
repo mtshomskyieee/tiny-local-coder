@@ -11,13 +11,18 @@ HEALTH_TIMEOUT_SEC="${TLC_HEALTH_TIMEOUT_SEC:-300}"
 PLAN_TIMEOUT_SEC="${TLC_PLAN_TIMEOUT_SEC:-600}"
 EXECUTE_TIMEOUT_SEC="${TLC_EXECUTE_TIMEOUT_SEC:-1200}"
 
-PLAN_PROMPT='Create only hello-world.c that prints hello world. One create todo. Do not compile, link, run gcc, or add any run or test todos. Coding only — stop after the source file exists.'
+PLAN_PROMPT='Write hello-world.c in C that prints hello world, then compile it with gcc and run it.'
 WORKSPACE="$ROOT/workspace"
 PLAN_FILE="$WORKSPACE/plan.md"
 HELLO_FILE="$WORKSPACE/hello-world.c"
+HELLO_BIN="$WORKSPACE/hello-world"
 EMPTY_PLAN=$'# Plan\n\nGoal:\n\n## Todos\n'
 # Same plan.md every run after the LLM produces any hello-world create todo.
-CANONICAL_PLAN=$'# Plan\nGoal: Create hello-world.c that prints hello world (coding only; no compile or run)\n\n## Todos\n1. [ ] create `hello-world.c` — prints hello world\n'
+# The LLM's own wording still varies too much to assert against, but the shape
+# below is what the planner is now expected to produce on its own: create, then
+# compile, then run. plan_has_build_todos() checks the LLM's plan for that shape
+# before this canonical version is substituted for the execute stage.
+CANONICAL_PLAN=$'# Plan\nGoal: Create hello-world.c, compile it with gcc and run it\n\n## Todos\n1. [ ] create `hello-world.c` — prints hello world\n2. [ ] run `gcc -Wall -std=c11 -o hello-world hello-world.c` — expect success\n3. [ ] run `./hello-world` — expect hello\n'
 
 FAILED=0
 FAILURES=()
@@ -192,10 +197,13 @@ plan_mentions_hello() {
   grep -Eqi 'hello[-_]world\.c' "$PLAN_FILE"
 }
 
-plan_has_run_todos() {
+# The planner must now produce a compile step on its own. Before the toolchain
+# registry it could not: `gcc …` was not in the run-command allowlist, so
+# finalize_plan dropped every build todo and the plan ended at the create step.
+plan_has_build_todos() {
   [[ -f "$PLAN_FILE" ]] || return 1
-  grep -Eqi '^[0-9]+\. \[[ x!]\] (run|test) ' "$PLAN_FILE" \
-    || grep -Eqi '^[0-9]+\. \[[ x!]\] .*(gcc|clang|compile|\./hello-world)' "$PLAN_FILE"
+  grep -Eqi '^[0-9]+\. \[[ x!]\] run `(gcc|cc|clang|make)' "$PLAN_FILE" || return 1
+  grep -Eqi '^[0-9]+\. \[[ x!]\] run `\./hello-world' "$PLAN_FILE"
 }
 
 # Fixed execute input every run (LLM wording / compile todos must not leak).
@@ -230,18 +238,23 @@ print(json.dumps({"prompt": sys.argv[1], "thinking_enabled": False}))
         return 1
       fi
       pass "plan.md has numbered todos and mentions hello-world.c"
-      log "Writing canonical create-only plan (same bytes every run)…"
+      if plan_has_build_todos; then
+        pass "plan.md has a compile step and a run step of its own"
+      else
+        fail "plan.md has no gcc/make compile step and ./hello-world run step"
+        log "--- plan.md ---"
+        cat "$PLAN_FILE"
+        log "---------------"
+        return 1
+      fi
+      log "Writing canonical build-and-run plan (same bytes every run)…"
       write_canonical_plan
-      rm -f "$HELLO_FILE" "$WORKSPACE/hello_world.c"
-      if plan_has_run_todos; then
-        fail "plan.md still has compile/run todos after create-only rewrite"
+      rm -f "$HELLO_FILE" "$HELLO_BIN" "$WORKSPACE/hello_world.c"
+      if ! plan_has_todos || ! plan_mentions_hello || ! plan_has_build_todos; then
+        fail "canonical plan lost the create / compile / run todos"
         return 1
       fi
-      if ! plan_has_todos || ! plan_mentions_hello; then
-        fail "canonical plan lost the hello-world.c create todo"
-        return 1
-      fi
-      pass "plan.md is the canonical create-only plan"
+      pass "plan.md is the canonical build-and-run plan"
       return 0
     fi
     api_get "$API/v1/status"
@@ -282,28 +295,17 @@ wait_for_execute() {
       if [[ -n "$command_id" && "$command_id" != "$last_id" ]]; then
         local cmd
         cmd="$(json_field "$body" "pending_approval.command" 2>/dev/null || true)"
-        if echo "$cmd" | grep -Eqi 'gcc|clang|compile|\./hello-world'; then
-          log "Denying compile/run gate: $cmd"
-          api_post "/v1/execute/approve" "$(python3 -c '
-import json, sys
-print(json.dumps({"command_id": sys.argv[1], "decision": "deny"}))
-' "$command_id")"
-          body="$LAST_BODY"
-          if [[ "$API_HTTP_CODE" != "200" ]]; then
-            fail "POST /v1/execute/approve (deny compile) HTTP $API_HTTP_CODE"
-            return 1
-          fi
-        else
-          log "Approving command $command_id (allow_all): $cmd"
-          api_post "/v1/execute/approve" "$(python3 -c '
+        # Compile and run used to be denied here, because the planner could
+        # not be trusted to produce them. They are the point of the test now.
+        log "Approving command $command_id (allow_all): $cmd"
+        api_post "/v1/execute/approve" "$(python3 -c '
 import json, sys
 print(json.dumps({"command_id": sys.argv[1], "decision": "allow_all"}))
 ' "$command_id")"
-          body="$LAST_BODY"
-          if [[ "$API_HTTP_CODE" != "200" ]]; then
-            fail "POST /v1/execute/approve HTTP $API_HTTP_CODE"
-            return 1
-          fi
+        body="$LAST_BODY"
+        if [[ "$API_HTTP_CODE" != "200" ]]; then
+          fail "POST /v1/execute/approve HTTP $API_HTTP_CODE"
+          return 1
         fi
         last_id="$command_id"
         status="$(json_field "$body" "status" 2>/dev/null || true)"
@@ -328,16 +330,45 @@ print(json.dumps({"command_id": sys.argv[1], "decision": "allow_all"}))
     return 1
   fi
 
-  if hello_file_ok; then
-    pass "hello-world.c exists and looks like a hello-world program"
-    return 0
+  if ! hello_file_ok; then
+    if [[ ! -s "$HELLO_FILE" ]]; then
+      fail "hello-world.c missing or empty after execute (${EXECUTE_TIMEOUT_SEC}s, last status=$status)"
+    else
+      fail "hello-world.c does not contain hello / printf / puts"
+    fi
+    return 1
   fi
-  if [[ ! -s "$HELLO_FILE" ]]; then
-    fail "hello-world.c missing or empty after execute (${EXECUTE_TIMEOUT_SEC}s, last status=$status)"
-  else
-    fail "hello-world.c does not contain hello / printf / puts"
+  pass "hello-world.c exists and looks like a hello-world program"
+
+  if [[ ! -x "$HELLO_BIN" ]]; then
+    fail "hello-world binary was not produced — the compile step did not run or did not succeed"
+    log "--- plan.md ---"
+    cat "$PLAN_FILE"
+    log "--- exec.log (tail) ---"
+    tail -40 "$WORKSPACE/exec.log" 2>/dev/null || true
+    log "-----------------------"
+    return 1
   fi
-  return 1
+  pass "hello-world binary was compiled"
+
+  if ! plan_all_todos_done; then
+    fail "plan.md has unfinished or skipped todos after execute"
+    cat "$PLAN_FILE"
+    return 1
+  fi
+  pass "every todo completed — no [!] skips"
+
+  if grep -q 'junk run command' "$WORKSPACE/exec.log" 2>/dev/null; then
+    fail "a build command was skipped as a junk run command"
+    return 1
+  fi
+  pass "no build command was dismissed as junk"
+  return 0
+}
+
+plan_all_todos_done() {
+  [[ -f "$PLAN_FILE" ]] || return 1
+  ! grep -Eq '^[0-9]+\. \[[ !]\]' "$PLAN_FILE"
 }
 
 clear_workspace_via_api() {

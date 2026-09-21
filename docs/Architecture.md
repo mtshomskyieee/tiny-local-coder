@@ -13,7 +13,8 @@ Every design choice favors:
 - **Deterministic glue over more LLM calls** — validate / augment / classify / **replan path-fix** in Python; LLM only when it must rewrite a tiny scrap of text
 - **Tools pick up the heavy lifting** — dedupe, `path/to/` strip, caps, Done narrative; never trust a 3B to manage plan structure
 - **Minimal prompts** — fix/replan see failure + file *names* + open todo lines, not whole trees or big dumps
-- **Short verify commands** — `py_compile` and one-line `python3 -c`; never long-running servers in todos
+- **Short verify commands** — a build check plus one behavioral run (`py_compile` + `python3 -c`, `make` + `./binary`); never long-running servers in todos
+- **Languages live in a table, not in prompts** — [`toolchains.py`](../src/tinylocalcoder/toolchains.py) owns every extension, run prefix, compile/smoke command, diagnostic regex and apt package; no other module names a language
 
 “More rigorous” means **harder to skip a check**, not **longer plans**.
 
@@ -99,7 +100,9 @@ TUI toggles: `/auto-fix`, `/auto-skip`, `/auto-replan`.
 | `agents/replan.py` | Tiny-context rewrite of remaining todos |
 | `agents/critic.py` | End-of-pass CONTINUE/DONE (mostly deterministic by mode) |
 | `tui/app.py` | Modes, workflows, meta commands |
-| `config.py` | `AUTO_FIX`, `AUTO_FIX_MAX`, `AUTO_SKIP`, `AUTO_REPLAN` |
+| `toolchains.py` | Language registry: extensions, run prefixes, compile/smoke builders, diagnostics, apt packages |
+| `tools/provision.py` | Detect a missing toolchain, install it through the gate, record it for the next image build |
+| `config.py` | `AUTO_FIX`, `AUTO_FIX_MAX`, `AUTO_SKIP`, `AUTO_REPLAN`, `AUTO_INSTALL` |
 
 Workspace memory: `plan.md`, prototypes, `exec.log`, `ask.md`, `session.md`, `manifest.txt` / `review.md` (from `/review`; `/review-fix` reads the latter), `.index/`.
 
@@ -109,12 +112,16 @@ After `/plan`, [`finalize_plan()`](../src/tinylocalcoder/memory/files.py) always
 
 1. Normalizes Goal + `## Todos`
 2. **Strips meta-like todos** (`reset-todo`, `skip-todo`, `review`, `review-fix`, `fix-plan`, `test`, `reset_todo_*.py`, …)
-3. **Drops junk run targets** (not `python3` / `pytest` / `PYTHONPATH=…`) — e.g. bare `Define`
+3. **Drops junk run targets** — anything whose first token is not a registered tool (`python3`, `pytest`, `make`, `g++`, `cargo`, `apt-get`, `./…`, `PYTHONPATH=…`), e.g. bare `Define`
 4. **Rewrites bad FastAPI verifies**: `from db import db; db.selectall()` → one short `from db import app; … routes …` check
-5. **Caps runs**: at most one open `py_compile` and one open behavioral `-c`
-6. **Augments** if still missing compile/smoke
+5. **Caps runs**: at most one open provision, one open compile and one open behavioral run, in that order
+6. **Augments** if still missing compile/smoke, using the registry's builders for whatever language the creates are in — `make` or `g++ -Wall -std=c++17 -o …` then `./binary` for C++, `py_compile` then `python3 -c "import …"` for Python
+7. **Prepends an install step** when a needed toolchain's probe binary is absent (`apt-get install -y g++ make`)
 
-`PLAN_SYSTEM` steers the same shape and forbids inventing a twin object named like the module.
+`PLAN_SYSTEM` steers the same shape. Its example block is chosen per language
+from the registry and *swapped in*, not added to — at 2048 ctx there is no room
+for a menu of languages, and the Python-only rules (`PYTHONPATH`,
+`src/__init__.py`, the twin-object warning) are dropped for non-Python targets.
 
 Good archive example: [`workspace/archive/beer-api/plan.md`](../workspace/archive/beer-api/plan.md).
 
@@ -130,13 +137,15 @@ Tiny-model rule: **tools do structural work**; the LLM only gets tightly framed 
 
 On a failed run step during `/execute-plan`:
 
+0. **Classify** the failure (`classify_failure`): *junk* (prose, not a command) / *environment* (a registered build tool is absent) / *code*
 1. **Junk command** → skip immediately (no LLM fix, **does not** consume replan budget)
+1b. **Environment** → `apt-get` the toolchain through the approval gate and retry the step (`AUTO_INSTALL=true`). A missing `./binary` is deliberately *not* an environment failure — it means the build never produced it
 2. **Auto-fix once** (`AUTO_FIX_MAX=1`) — heuristics + optional CREATE/WRITE, then retry
 3. If still failing and **plan smell** → **auto-replan once** (`AUTO_REPLAN=true`):
    - Collapse completed work into a one-line `Done:` narrative (not numbered `[x]` spam)
    - **Deterministic tools first**: path/import mismatch (`No module named X` + `**/X.py` exists) rewrites the open verify without an LLM
    - **LLM last resort**: return 1–2 open todo lines only; Python assembles Goal + Done + Todos
-   - Discard spam / huge model output; fall back to a smoke import of an existing `.py`
+   - Discard spam / huge model output; fall back to a short verify for whatever language the workspace contains
 4. Otherwise **auto-skip** (`[!]`), and **skip clone runs** with the same `from X import Y` prefix
 
 `finalize_plan` always **dedupes**, strips `path/to/` placeholders, and **hard-caps** todo count so a looping 3B cannot poison `plan.md`.
@@ -146,7 +155,9 @@ Manual `/fix` does not auto-replan; it may hint to re-run execute with auto-repl
 ## Fix guardrails
 
 - Heuristic `__init__.py` only for packages named in the failing import — not a blanket `src/`
-- Fix prompt includes **one** failed todo line + workspace file name list + small snippets
+- Heuristic Makefile repair: a `missing separator` diagnostic re-indents recipe lines with a TAB, no model call
+- Fix prompt includes **one** failed todo line, a compact `file:line — message` diagnostics block, a one-line language hint, the workspace file name list and small snippets
+- Build diagnostics (gcc/clang, make, ld, rustc, go, …) are parsed by the registry, so a `.cpp` or `Makefile` failure names a file the fix agent can actually open. `stderr` precedes `stdout` in the failure blob because only its first 2500 chars reach the prompt
 - `NEEDS_REPLAN` → no file writes; graph takes the replan path
 
 ## Configuration
@@ -159,11 +170,24 @@ See [`.env.example`](../.env.example):
 | `AUTO_FIX_MAX` | `1` | Max auto-fix attempts per execute invoke |
 | `AUTO_REPLAN` | `true` | One open-todo rewrite on plan smell |
 | `AUTO_SKIP` | `true` | Mark failed steps `[!]` and continue |
+| `AUTO_INSTALL` | `true` | `apt-get` a missing language toolchain, then retry the step |
 | `NUM_CTX` | `2048` | Keep small; do not raise casually |
+
+### Toolchain persistence
+
+A runtime `apt-get install` lives only in the running container. Every install
+is therefore appended to `workspace/.toolchains`, which `start-service.sh` and
+`build-service.sh` pass to the Dockerfile as `EXTRA_APT_PACKAGES`, so the next
+rebuild bakes in what the agent learned it needed instead of reinstalling it
+every session. Provisioning goes through the normal approval gate — it is never
+silent — and uses a longer timeout than the 60s verify budget, which would
+otherwise kill apt mid-install.
 
 ## Out of scope (by design)
 
 - pytest scaffolding / TestClient-heavy verify templates as defaults
+- Per-language *review* depth beyond cheap heuristics (the review tool is opinionated, not a compiler)
+- Toolchain installs from anything but apt (no curl-pipe-sh installers, no version managers)
 - Extra critic LLM rounds for classification
 - Raising default context or multi-turn repair chats inside one step
 - HTTP `/v1/fix` endpoint
