@@ -335,7 +335,7 @@ def test_validate_plan_flags_missing_verify_and_meta(memory: WorkspaceMemory) ->
     )
     blob = " ".join(issues)
     assert "meta-command" in blob
-    assert "py_compile" in blob
+    assert "missing compile step" in blob
 
 
 def test_validate_plan_flags_run_without_expect(memory: WorkspaceMemory) -> None:
@@ -352,3 +352,141 @@ def test_validate_plan_clean_plan_has_no_issues(memory: WorkspaceMemory) -> None
             _todo("run", "python3 -m py_compile b.py", "expect success", number=2),
         ]
     ) == []
+
+
+class TestLanguageAwarePlans:
+    """A finished plan must build and run the program, whatever the language.
+
+    Before the toolchain registry, `is_valid_run_command` was a Python-only
+    allowlist, so every `make` / `g++` todo was silently dropped here and a C++
+    plan reached the executor with no compile step at all.
+    """
+
+    def test_build_commands_are_valid_run_targets(self) -> None:
+        for cmd in (
+            "make",
+            "g++ -Wall -std=c++17 -o app main.cpp",
+            "gcc -o hello hello.c",
+            "cargo build",
+            "go build -o main main.go",
+            "node main.js",
+            "./app 9",
+            "CC=gcc make",
+            "apt-get update && apt-get install -y g++ make",
+        ):
+            assert is_valid_run_command(cmd), cmd
+
+    def test_prose_is_still_rejected(self) -> None:
+        for cmd in ("Define the struct", "", "Implement square root"):
+            assert not is_valid_run_command(cmd)
+
+    def test_source_files_are_create_todos_not_junk_commands(self) -> None:
+        infer = WorkspaceMemory._action_from_match
+        assert infer("", "Makefile") == "create"
+        assert infer("", "src/square_root.cpp") == "create"
+        assert infer("", "hello.c") == "create"
+        assert infer("", "make") == "run"
+        assert infer("", "g++ -o app main.cpp") == "run"
+
+    def test_unbackticked_build_command_is_not_truncated(
+        self, memory: WorkspaceMemory
+    ) -> None:
+        todos = memory._todos_from_lines(
+            ["1. [ ] g++ -Wall -o app main.cpp — expect success"],
+            require_section=False,
+        )
+        assert [t.target for t in todos] == ["g++ -Wall -o app main.cpp"]
+
+    def test_cpp_plan_gains_compile_and_run_steps(
+        self, memory: WorkspaceMemory
+    ) -> None:
+        final = memory.render_finalized_plan(
+            "# Plan\n"
+            "Goal: C++ square root program with a Makefile.\n\n"
+            "## Todos\n"
+            "1. [ ] create `src/square_root.cpp` — sqrt of a double from argv\n"
+            "2. [ ] create `Makefile` — builds square_root\n"
+        )
+        assert "run `make` — expect success" in final
+        assert "run `./square_root` — expect success" in final
+
+    def test_cpp_plan_without_makefile_compiles_directly(
+        self, memory: WorkspaceMemory
+    ) -> None:
+        final = memory.render_finalized_plan(
+            "# Plan\nGoal: C++ square root.\n\n"
+            "## Todos\n1. [ ] create `square_root.cpp` — sqrt of argv\n"
+        )
+        assert "g++ -Wall -std=c++17 -o square_root square_root.cpp" in final
+        assert "run `./square_root`" in final
+
+    def test_existing_build_step_is_kept_not_duplicated(
+        self, memory: WorkspaceMemory
+    ) -> None:
+        final = memory.render_finalized_plan(
+            "# Plan\nGoal: C++ square root.\n\n"
+            "## Todos\n"
+            "1. [ ] create `square_root.cpp` — sqrt of argv\n"
+            "2. [ ] run `make` — expect success\n"
+        )
+        assert final.count("run `make`") == 1
+        assert "g++" not in final
+
+    def test_python_plans_are_unchanged(self, memory: WorkspaceMemory) -> None:
+        final = memory.render_finalized_plan(
+            "# Plan\nGoal: a small module.\n\n"
+            "## Todos\n1. [ ] create `app.py` — does a thing\n"
+        )
+        assert "python3 -m py_compile app.py" in final
+        assert 'python3 -c "import app"' in final
+
+    def test_fastapi_plans_keep_the_route_listing_verify(
+        self, memory: WorkspaceMemory
+    ) -> None:
+        final = memory.render_finalized_plan(
+            "# Plan\nGoal: a FastAPI endpoint for beers.\n\n"
+            "## Todos\n1. [ ] create `db.py` — FastAPI app\n"
+        )
+        assert "py_compile" in final
+        assert "app.routes" in final
+
+    def test_install_step_is_added_when_the_toolchain_is_missing(
+        self, memory: WorkspaceMemory, monkeypatch
+    ) -> None:
+        import tinylocalcoder.toolchains as toolchains
+
+        monkeypatch.setattr(toolchains.shutil, "which", lambda name: None)
+        final = memory.render_finalized_plan(
+            "# Plan\nGoal: C++ square root with a Makefile.\n\n"
+            "## Todos\n"
+            "1. [ ] create `square_root.cpp` — sqrt of argv\n"
+            "2. [ ] create `Makefile` — builds square_root\n"
+        )
+        lines = [ln for ln in final.splitlines() if ln.strip().startswith(("3.", "4.", "5."))]
+        assert "apt-get" in lines[0] and "g++" in lines[0]
+        # Install must come before the build that needs it
+        assert "make" in lines[1]
+        assert "./square_root" in lines[2]
+
+    def test_no_install_step_when_the_toolchain_is_present(
+        self, memory: WorkspaceMemory, monkeypatch
+    ) -> None:
+        import tinylocalcoder.toolchains as toolchains
+
+        monkeypatch.setattr(toolchains.shutil, "which", lambda name: f"/usr/bin/{name}")
+        final = memory.render_finalized_plan(
+            "# Plan\nGoal: C++ square root.\n\n"
+            "## Todos\n1. [ ] create `square_root.cpp` — sqrt of argv\n"
+        )
+        assert "apt-get" not in final
+
+    def test_validate_plan_reports_a_missing_cpp_compile_step(
+        self, memory: WorkspaceMemory
+    ) -> None:
+        issues = memory.validate_plan(
+            [
+                _todo("create", "square_root.cpp", "sqrt", number=1),
+                _todo("run", "./square_root", "expect 3", number=2),
+            ]
+        )
+        assert any("missing compile step for created cpp" in i for i in issues)
