@@ -3,13 +3,31 @@
 from __future__ import annotations
 
 import re
+from pathlib import Path
 
 from langchain_core.messages import HumanMessage, SystemMessage
 
 from tinylocalcoder.llm import invoke_llm, message_text
 from tinylocalcoder.memory.files import TodoStep, WorkspaceMemory
+from tinylocalcoder.toolchains import (
+    all_source_extensions,
+    all_source_filenames,
+    toolchain_for_path,
+)
 from tinylocalcoder.tools.manifest import fulfill_manifest_todo, is_manifest_todo
 from tinylocalcoder.tools.review import fulfill_review_todo, is_review_todo
+
+
+# Every extension the agent may be asked to write, from the toolchain registry
+# plus the docs/config files it routinely produces. Hardcoding this list is how
+# `square_root.cpp` and `Makefile` used to be dropped as non-paths.
+_FILE_SUFFIXES: tuple[str, ...] = tuple(
+    dict.fromkeys(
+        all_source_extensions() + (".md", ".txt", ".json", ".toml", ".sh", ".yml", ".yaml")
+    )
+)
+_SUFFIX_ALT = "|".join(re.escape(e.lstrip(".")) for e in _FILE_SUFFIXES)
+_FILENAME_ALT = "|".join(re.escape(f) for f in all_source_filenames())
 
 
 CODE_CREATE_SYSTEM = """You are a coding agent on a small-context local LLM.
@@ -27,11 +45,13 @@ Apply the user request precisely (e.g. change a port number).
 _FENCE_RE = re.compile(r"^```(?:\w+)?\n([\s\S]*?)\n```$", re.MULTILINE)
 _BACKTICK_PATH_RE = re.compile(r"`([^`]+)`")
 _PATH_RE = re.compile(
-    r"(?:^|[\s`'\"])((?:src/|workspace/)?[\w./-]+\.(?:py|md|txt|json|toml|sh))(?:$|[\s`'\":,])",
+    rf"(?:^|[\s`'\"])((?:src/|workspace/)?(?:[\w./+-]+\.(?:{_SUFFIX_ALT})"
+    rf"|(?:[\w./-]+/)?(?:{_FILENAME_ALT})))(?:$|[\s`'\":,])",
     re.IGNORECASE,
 )
 _SHOW_RE = re.compile(
-    r"\b(?:show|read|display|cat|print|open)\b.*?\b([\w./-]+\.(?:py|md|txt|json|toml|sh))\b",
+    rf"\b(?:show|read|display|cat|print|open)\b.*?\b"
+    rf"([\w./+-]+\.(?:{_SUFFIX_ALT})|(?:{_FILENAME_ALT}))\b",
     re.IGNORECASE,
 )
 _EDIT_HINT_RE = re.compile(
@@ -82,8 +102,36 @@ def _paths_for_todo(todo: TodoStep) -> list[str]:
         p
         for p in paths
         if not p.startswith(("python", "curl", "http"))
-        and ("/" in p or p.endswith((".py", ".md", ".txt", ".json", ".toml", ".sh")))
+        and (
+            "/" in p
+            or p.lower().endswith(_FILE_SUFFIXES)
+            or Path(p).name.lower() in {f.lower() for f in all_source_filenames()}
+        )
     ] or ([target] if target else [])
+
+
+_LANGUAGE_LABELS = {
+    "cpp": "C++",
+    "c": "C",
+    "python": "Python",
+    "rust": "Rust",
+    "go": "Go",
+    "ruby": "Ruby",
+    "node": "JavaScript",
+    "java": "Java",
+}
+
+
+def _language_note(path: str) -> str:
+    """One line naming the language, or the Makefile rule that trips up 3B models."""
+    if Path(path).name.lower().startswith(("makefile", "gnumakefile")):
+        return (
+            "This file is a Makefile. Every recipe line MUST begin with a TAB "
+            "character, and every recipe MUST sit under a `target: deps` line.\n"
+        )
+    tc = toolchain_for_path(path)
+    label = _LANGUAGE_LABELS.get(tc.name) if tc else None
+    return f"Write {label}.\n" if label else ""
 
 
 def pending_file_paths(memory: WorkspaceMemory) -> list[str]:
@@ -125,9 +173,12 @@ def _write_one_file(
     existing = memory.read_prototype(path) if refine or memory.prototype_exists(path) else ""
     if existing and len(existing) > 4000:
         existing = existing[:4000] + "\n# …truncated…"
+    # The model only sees the todo line, so name the language explicitly rather
+    # than making it infer one from the filename.
+    lang = _language_note(path)
     if refine or existing:
         messages = [
-            SystemMessage(content=CODE_REFINE_SYSTEM),
+            SystemMessage(content=CODE_REFINE_SYSTEM + lang),
             HumanMessage(
                 content=(
                     f"{step_ctx}\n"
@@ -139,7 +190,7 @@ def _write_one_file(
         ]
     else:
         messages = [
-            SystemMessage(content=CODE_CREATE_SYSTEM),
+            SystemMessage(content=CODE_CREATE_SYSTEM + lang),
             HumanMessage(
                 content=(
                     f"{step_ctx}\n"

@@ -22,6 +22,7 @@ class Settings(BaseSettings):
     auto_fix_max: int = 1
     auto_skip: bool = True
     auto_replan: bool = True
+    auto_install: bool = True
     workspace_dir: Path = Path("workspace")
     exec_timeout_sec: int = 60
     host: str = "0.0.0.0"

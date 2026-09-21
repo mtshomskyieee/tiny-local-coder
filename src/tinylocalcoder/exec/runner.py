@@ -44,7 +44,12 @@ class CommandRunner:
         self.cwd = Path(self.settings.workspace_dir)
         self.processes = ProcessRegistry(self.memory.processes_path)
 
-    def run(self, command: str, reason: str = "") -> RunResult:
+    def run(
+        self, command: str, reason: str = "", timeout: int | None = None
+    ) -> RunResult:
+        """Run one command. `timeout` overrides the default for slow steps
+        such as `apt-get install`, which a 60s verify budget would kill."""
+        limit = timeout or self.settings.exec_timeout_sec
         decision = self.gate.request(command, str(self.cwd), reason=reason)
         if decision == Decision.DENY:
             self.memory.append_exec_log(
@@ -79,7 +84,7 @@ class CommandRunner:
             )
 
             try:
-                stdout, stderr = proc.communicate(timeout=self.settings.exec_timeout_sec)
+                stdout, stderr = proc.communicate(timeout=limit)
             except subprocess.TimeoutExpired:
                 # Long-running server / hung command — kill the group but keep
                 # registry entry so /fix can free the port later if needed.
@@ -130,7 +135,7 @@ class CommandRunner:
                     exit_code=None,
                     stdout=stdout[-4000:],
                     stderr=stderr[-4000:],
-                    error=f"timeout after {self.settings.exec_timeout_sec}s",
+                    error=f"timeout after {limit}s",
                     pid=pid,
                 )
             else:

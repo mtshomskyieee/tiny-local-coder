@@ -10,6 +10,15 @@ from pathlib import Path
 from tinylocalcoder.config import Settings, get_settings
 from tinylocalcoder.memory.chunking import retrieve_chunks
 from tinylocalcoder.memory.index import FileIndex
+from tinylocalcoder.toolchains import (
+    all_run_prefixes,
+    all_source_extensions,
+    all_source_filenames,
+    detect_toolchains,
+    install_command,
+    is_compile_command,
+    is_provision_command,
+)
 
 
 # Legacy checkbox lines under Deliverables / Run / Test
@@ -21,13 +30,23 @@ _CHECKBOX_RE = re.compile(
 _TODO_RE = re.compile(
     r"^(\d+)\.\s+\[([ xX!])\]\s+"
     r"(?:(create|write|refine|update|fix|run|test)\s+)?"
-    r"(?:`([^`]+)`|(\S+))\s*"
-    r"(?:—|--|-)?\s*(.*)$",
+    # Backticked target, or bare text up to the em-dash description separator.
+    # The bare branch must not stop at the first space: an unbackticked
+    # `g++ -Wall -o app main.cpp` is one target, not a target plus a description.
+    r"(?:`([^`]+)`|([^`].*?))\s*"
+    r"(?:(?:—|--|\s-\s)\s*(.*))?$",
     re.IGNORECASE,
 )
 
 _GOAL_RE = re.compile(r"^(?:#\s*)?Goal:\s*(.+)$", re.IGNORECASE)
 _DONE_RE = re.compile(r"^Done:\s*(.+)$", re.IGNORECASE)
+
+# Suffixes a bare todo target may carry and still be a file to create:
+# every registered language extension plus the doc/config files the agent
+# routinely writes.
+_CREATE_SUFFIXES: tuple[str, ...] = tuple(
+    dict.fromkeys(all_source_extensions() + (".md", ".txt", ".json", ".toml", ".sh", ".yml", ".yaml"))
+)
 
 # Max numbered todos after finalize (tiny-model safety net)
 PLAN_TODO_CAP = 12
@@ -114,17 +133,47 @@ _FROM_MOD_IMPORT_MOD = re.compile(
 )
 
 
+def _strip_env_prefix(command: str) -> str:
+    """Drop leading `VAR=value` assignments (`CC=gcc make` -> `make`)."""
+    c = (command or "").strip()
+    while True:
+        parts = c.split(maxsplit=1)
+        if len(parts) != 2:
+            return c
+        head, rest = parts
+        if "=" in head and not head.startswith("-") and head.split("=", 1)[0].isidentifier():
+            c = rest.strip()
+            continue
+        return c
+
+
 def is_valid_run_command(command: str) -> bool:
-    """True when a run todo looks like an allowed short shell command."""
+    """True when a run todo looks like an allowed short shell command.
+
+    The allowlist of first tokens comes from the toolchain registry, so adding
+    a language automatically makes its build/run commands legal verify steps.
+    EVERY segment of an `&&` / `||` / `;` chain must pass, so a legitimate
+    prefix cannot carry an unrelated command along behind it.
+    """
     c = (command or "").strip()
     if not c:
         return False
     if c.startswith("PYTHONPATH="):
         return "python3" in c or "python " in c or "pytest" in c
-    first = c.split(maxsplit=1)[0]
-    return first in {"python3", "python", "pytest", "bash", "sh"} or first.startswith(
-        "./"
-    )
+    segments = [seg.strip() for seg in re.split(r"&&|\|\||;", c)]
+    if not segments or any(not seg for seg in segments):
+        return False
+    return all(_segment_is_run_command(seg) for seg in segments)
+
+
+def _segment_is_run_command(segment: str) -> bool:
+    segment = _strip_env_prefix(segment)
+    if not segment:
+        return False
+    first = segment.split(maxsplit=1)[0]
+    if first.startswith("./"):
+        return True
+    return Path(first).name in all_run_prefixes()
 
 
 def strip_placeholder_path(path: str) -> str:
@@ -536,7 +585,8 @@ class WorkspaceMemory:
 
         # /src/foo.py → src/foo.py  (common LLM mistake)
         cmd = re.sub(r"(?<![\w])/(src|prototypes|tests)/", r"\1/", command)
-        cmd = re.sub(r"(?<![\w])/([\w.-]+\.py)\b", r"\1", cmd)
+        exts = "|".join(re.escape(e.lstrip(".")) for e in all_source_extensions())
+        cmd = re.sub(rf"(?<![\w])/([\w.-]+\.(?:{exts}))\b", r"\1", cmd)
         return cmd
 
     def write_prototype(self, rel_path: str, content: str) -> Path:
@@ -607,14 +657,21 @@ class WorkspaceMemory:
             return "refine"
         if action_raw in {"create", "write"}:
             return "create"
-        # Infer when the model omits the verb
+        # Infer when the model omits the verb. Check create-shaped targets
+        # first: `Makefile` and `main.cpp` have no slash and no space, and used
+        # to fall through to "run" (and then be dropped as a junk command).
+        name = Path(target.replace("\\", "/")).name
+        if name.lower() in {f.lower() for f in all_source_filenames()}:
+            return "create"
+        if " " not in target and name.lower().endswith(_CREATE_SUFFIXES):
+            return "create"
         if target.startswith(("python", "pytest", "curl", "bash", "sh ", "./")):
+            return "run"
+        if is_valid_run_command(target):
             return "run"
         if " " in target or target.startswith(("http://", "https://")):
             return "run"
-        if "/" in target or target.endswith(
-            (".py", ".md", ".txt", ".json", ".toml", ".sh")
-        ):
+        if "/" in target or name.lower().endswith(_CREATE_SUFFIXES):
             return "create"
         return "run"
 
@@ -856,14 +913,15 @@ class WorkspaceMemory:
                 issues.append(f"todo {t.number}: meta-command `{t.target}`")
         if creates and not runs:
             issues.append("no run todos (need at least one short verify)")
-        py_creates = [
-            t
-            for t in creates
-            if t.target.endswith(".py") and not t.target.endswith("__init__.py")
-        ]
-        has_compile = any("py_compile" in (t.target or "") for t in runs)
-        if py_creates and not has_compile:
-            issues.append("missing py_compile for created .py files")
+        created_paths = [t.target for t in creates]
+        needed = detect_toolchains(created_paths, [t.target for t in runs])
+        has_compile = any(is_compile_command(t.target or "") for t in runs)
+        wants_compile = any(
+            tc.compile_cmd and tc.compile_cmd(created_paths) for tc in needed
+        )
+        if wants_compile and not has_compile:
+            langs = "/".join(tc.name for tc in needed if tc.compile_cmd) or "source"
+            issues.append(f"missing compile step for created {langs} files")
         for t in runs:
             blob = f"{t.target} {t.description}".lower()
             if "expect" not in blob:
@@ -993,6 +1051,7 @@ class WorkspaceMemory:
         """Drop junk/meta, strip path/to/, rewrite bad FastAPI checks, cap runs."""
         fastapi = looks_fastapi_goal(goal, todos)
         out: list[TodoStep] = []
+        provision_runs: list[TodoStep] = []
         compile_runs: list[TodoStep] = []
         behavior_runs: list[TodoStep] = []
 
@@ -1039,8 +1098,10 @@ class WorkspaceMemory:
                     raw_line=t.raw_line,
                     skipped=t.skipped,
                 )
-                if "py_compile" in cmd:
+                if is_compile_command(cmd):
                     compile_runs.append(step)
+                elif is_provision_command(cmd):
+                    provision_runs.append(step)
                 else:
                     behavior_runs.append(step)
                 continue
@@ -1075,35 +1136,50 @@ class WorkspaceMemory:
                     open_kept = True
             return kept
 
-        merged = out + _one_each(compile_runs) + _one_each(behavior_runs)
+        # Provision before build before behavior — installing the toolchain is
+        # useless after the compile step has already failed.
+        merged = (
+            out
+            + _one_each(provision_runs)
+            + _one_each(compile_runs)
+            + _one_each(behavior_runs)
+        )
         return self.cap_todos(self.dedupe_todos(merged))
 
     def augment_plan_todos(
         self, todos: list[TodoStep], goal: str = ""
     ) -> list[TodoStep]:
-        """Sanitize, then append at most one py_compile and one smoke run if missing."""
+        """Sanitize, then append the missing provision / compile / smoke runs.
+
+        Which commands those are comes entirely from the toolchain registry, so
+        a C++ plan gets `g++ …` + `./binary` exactly the way a Python plan gets
+        `py_compile` + `python3 -c "import …"`. Without this a non-Python plan
+        finished with no verify step at all.
+        """
         cleaned = self.sanitize_plan_todos(todos, goal=goal)
         creates = [t for t in cleaned if t.action in {"create", "write", "refine"}]
         runs = [t for t in cleaned if t.action in {"run", "test"}]
-        py_files = [
-            t.target
-            for t in creates
-            if t.target.endswith(".py") and not t.target.endswith("__init__.py")
-        ]
-        has_compile = any("py_compile" in (t.target or "") for t in runs)
-        has_behavior = any("py_compile" not in (t.target or "") for t in runs)
+        created_paths = [t.target for t in creates]
         fastapi = looks_fastapi_goal(goal, cleaned)
+
+        has_compile = any(is_compile_command(t.target or "") for t in runs)
+        has_provision = any(is_provision_command(t.target or "") for t in runs)
+        has_behavior = any(
+            not is_compile_command(t.target or "")
+            and not is_provision_command(t.target or "")
+            for t in runs
+        )
 
         out = list(cleaned)
         next_num = (max((t.number for t in out), default=0) + 1) if out else 1
 
-        if py_files and not has_compile:
-            files = " ".join(dict.fromkeys(py_files))
+        def _append(target: str) -> None:
+            nonlocal next_num
             out.append(
                 TodoStep(
                     number=next_num,
                     action="run",
-                    target=f"python3 -m py_compile {files}",
+                    target=target,
                     description="expect success",
                     done=False,
                     raw_line="",
@@ -1111,11 +1187,21 @@ class WorkspaceMemory:
             )
             next_num += 1
 
-        if py_files and not has_behavior:
-            mod_path = py_files[0]
-            mod = self._module_from_py_path(mod_path)
-            parent = str(Path(mod_path).parent).replace("\\", "/")
-            if fastapi:
+        needed = detect_toolchains(created_paths, [t.target for t in runs])
+
+        # FastAPI keeps its bespoke route-listing smoke run; the registry's
+        # generic `import mod` check is not a useful verify for a web app.
+        if fastapi:
+            py_files = [
+                t.target
+                for t in creates
+                if t.target.endswith(".py") and not t.target.endswith("__init__.py")
+            ]
+            if py_files and not has_compile:
+                _append("python3 -m py_compile " + " ".join(dict.fromkeys(py_files)))
+            if py_files and not has_behavior:
+                mod_path = py_files[0]
+                parent = str(Path(mod_path).parent).replace("\\", "/")
                 inner = (
                     f"from {Path(mod_path).stem} import app; "
                     "print([getattr(r,'path',None) for r in app.routes])"
@@ -1123,20 +1209,36 @@ class WorkspaceMemory:
                 cmd = f'python3 -c "{inner}"'
                 if parent not in {".", ""}:
                     cmd = f"PYTHONPATH={parent} " + cmd
-            elif parent not in {".", ""}:
-                cmd = f'PYTHONPATH={parent} python3 -c "import {Path(mod_path).stem}"'
-            else:
-                cmd = f'python3 -c "import {mod}"'
-            out.append(
-                TodoStep(
-                    number=next_num,
-                    action="run",
-                    target=cmd,
-                    description="expect success",
-                    done=False,
-                    raw_line="",
-                )
-            )
+                _append(cmd)
+            return self.cap_todos(self.dedupe_todos(out))
+
+        compile_cmds: list[str] = []
+        smoke_cmds: list[str] = []
+        for tc in needed:
+            owned = [p for p in created_paths if tc.owns_path(p)]
+            if not owned:
+                continue
+            if tc.compile_cmd:
+                cmd = tc.compile_cmd(owned)
+                if cmd:
+                    compile_cmds.append(cmd)
+            if tc.smoke_cmd:
+                cmd = tc.smoke_cmd(owned)
+                if cmd:
+                    smoke_cmds.append(cmd)
+
+        # Install anything the build will need but the container lacks, first.
+        if not has_provision and (compile_cmds or smoke_cmds):
+            missing = [tc for tc in needed if tc.missing_probes()]
+            install = install_command(missing)
+            if install:
+                _append(install)
+
+        if compile_cmds and not has_compile:
+            _append(compile_cmds[0])
+        if smoke_cmds and not has_behavior:
+            _append(smoke_cmds[0])
+
         return self.cap_todos(self.dedupe_todos(out))
 
     def render_finalized_plan(self, text: str | None = None) -> str:

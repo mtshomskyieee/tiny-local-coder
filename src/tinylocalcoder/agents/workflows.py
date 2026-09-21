@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal
 
 from tinylocalcoder.memory.files import TodoStep, WorkspaceMemory
+from tinylocalcoder.toolchains import toolchain_for_path
 from tinylocalcoder.tools.manifest import (
     MANIFEST_NAME,
     fulfill_open_manifest_todos,
@@ -46,8 +47,9 @@ TEST_PROMPT = """Write a SHORT numbered todo plan that IS a runnable test plan f
 Goal: find existing tests and run them (or add a tiny missing smoke test if none exist).
 
 Required shape:
-1. Prefer run todos that execute real tests: `python3 -m pytest` or `python3 -m unittest discover -s tests -v` (or a specific test file if that is clearer).
-2. If there are no tests, create a minimal `tests/__init__.py` + one tiny `tests/test_*.py`, then ONE run step.
+1. Prefer run todos that execute real tests in the language the workspace is already written in:
+   Python `python3 -m pytest`, a Makefile `make test`, `cargo test`, `go test ./...`, `npm test`.
+2. If there are no tests, create ONE tiny test in that same language, then ONE run step.
 3. Prefer ≤8 todos. Creates first (only if needed), then run steps. No servers. No meta commands as todos.
 4. Paths/commands are workspace-relative.
 
@@ -61,7 +63,8 @@ Goal: apply the review findings as refine/fix todos on existing files.
 
 Required shape:
 1. Each todo is refine `existing/path` — fix the quoted finding. Prefer one todo per file (bundle that file's findings).
-2. After refines, ONE `run python3 -m py_compile …` covering edited files. If tests exist, ONE short `run python3 -m pytest` (or unittest) smoke.
+2. After refines, ONE build/compile check for the edited files in their own language
+   (`python3 -m py_compile …`, `make`, `g++ -Wall -o …`, `cargo build`). If tests exist, ONE short test run.
 3. Do NOT create or overwrite review.md, manifest.txt, plan.md, or ask.md.
 4. Prefer ≤8 todos. No servers. No meta commands as todos.
 5. Skip info-only notes. Fix high and medium first; include clear lows when cheap.
@@ -77,7 +80,8 @@ Required shape:
 2. Every GAP note must become an open refine/run todo (or be covered by one).
 3. A start_*.sh that does not run Python must be refined so it imports the FastAPI `app` and prints routes, then EXITS. Never hang on uvicorn.
 4. Missing endpoints in the requirement → refine the existing FastAPI file (do not invent src/main.py unless no app file exists).
-5. Prefer ≤8 todos. Refines first, then ONE py_compile, then ONE short python3 -c or bash start_*.sh smoke (expect a route path).
+5. Prefer ≤8 todos. Refines first, then ONE compile/build check, then ONE short behavioral run.
+   For a FastAPI app that smoke is `python3 -c "… app.routes"` or `bash start_*.sh` (expect a route path).
 6. No long-running servers. No meta commands as todos.
 
 Return the FULL plan.md only."""
@@ -315,15 +319,22 @@ def _load_review_for_fix(
     return body, issues
 
 
+_TEST_NAME_RE = re.compile(r"(?:^|[_./-])tests?(?:[_.-]|$)", re.IGNORECASE)
+
+
 def _list_workspace_tests(memory: WorkspaceMemory) -> list[str]:
-    """Workspace-relative test modules (not __init__.py)."""
+    """Workspace-relative test files, in any registered language.
+
+    Previously this only matched `test_*.py`, so a `test_square_root.cpp` or a
+    `make test` target was invisible to /test.
+    """
     found: list[str] = []
     for rel in memory.list_files():
         norm = rel.replace("\\", "/")
         name = Path(norm).name
-        if name == "__init__.py" or not name.endswith(".py"):
+        if name == "__init__.py" or toolchain_for_path(norm) is None:
             continue
-        if name.startswith("test_"):
+        if _TEST_NAME_RE.search(Path(name).stem):
             found.append(norm)
             continue
         if "/tests/" in f"/{norm}/":

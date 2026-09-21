@@ -100,3 +100,29 @@ def test_parse_review_issues_skips_info(tmp_path: Path) -> None:
     ]
     action = actionable_issues(parsed)
     assert [i.path for i in action] == ["src/db.py", "src/db.py"]
+
+
+def test_review_flags_orphan_makefile_recipe(tmp_path: Path) -> None:
+    mem = _memory(tmp_path)
+    (tmp_path / "src").mkdir()
+    (tmp_path / "src" / "square_root.cpp").write_text(
+        "#include <cmath>\ndouble square_root(double n) { return std::sqrt(n); }\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "Makefile").write_text(
+        "CC = g++\n"
+        "CCFLAGS = -Wall -std=c++11\n"
+        "\n"
+        "$(CC) $(CCFLAGS) $< -o $@\n"
+        "\n"
+        "clean:\n"
+        "\trm -f square_root\n",
+        encoding="utf-8",
+    )
+    write_manifest(mem)
+    _path, reviews = write_review(mem)
+    body = mem.read_prototype("review.md")
+    assert "### `Makefile`" in body
+    assert "### `src/square_root.cpp`" in body
+    mk = next(r for r in reviews if r.path == "Makefile")
+    assert any(f.severity == "high" for f in mk.findings)

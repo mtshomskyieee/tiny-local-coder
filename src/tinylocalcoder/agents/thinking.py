@@ -6,6 +6,7 @@ from langchain_core.messages import HumanMessage, SystemMessage
 
 from tinylocalcoder.llm import invoke_llm, message_text
 from tinylocalcoder.memory.files import WorkspaceMemory
+from tinylocalcoder.toolchains import DEFAULT_TOOLCHAIN, toolchain_from_prompt
 
 
 PLAN_SYSTEM = """You write a SHORT markdown plan for a tiny local LLM (small context).
@@ -16,26 +17,41 @@ Required format (exactly):
 Goal: <one sentence>
 
 ## Todos
-1. [ ] create `path/to/file.py` — what this file must do
-2. [ ] run `python3 -m py_compile path/to/file.py` — expect success
-3. [ ] run `python3 -c "import mod"` — expect success
+{example}
 
 Rules:
 - Prefer ≤8 todos. Each todo is ONE tiny action: create | refine | run.
-- Creates first, then ONE batched py_compile, then ONE short behavioral python3 -c.
+- Creates first, then ONE build/compile check, then ONE short behavioral run.
 - Do NOT stack many assert/run steps. One short check is enough.
 - Never put meta commands in todos (reset-todo, skip-todo, auto-fix, clear-plan, review, review-fix, fix-plan, test, …).
 - Paths/commands are workspace-relative. NEVER leading `/`.
 - NEVER use placeholder paths like `path/to/file.py` — use real names (`db.py`, `src/api.py`).
-- Prefer package-safe runs: `PYTHONPATH=. python3 -c "from src.api import app; …"`.
+- Run steps MUST exit quickly. Bad: uvicorn/servers, interactive commands.
+- For run todos, end with `expect success` or `expect True` (etc.).
+- Keep Goal one line. No code blocks. Return the FULL plan.md only.
+{extra}"""
+
+# Rules that only make sense for Python targets. Injected instead of the
+# generic tail so a C++ plan is not told about PYTHONPATH and __init__.py.
+PYTHON_RULES = """- Prefer package-safe runs: `PYTHONPATH=. python3 -c "from src.api import app; …"`.
 - Ensure `src/__init__.py` when using `src.*` imports.
-- Run steps MUST exit quickly. Good: py_compile, short python3 -c. Bad: uvicorn/servers.
 - For FastAPI/REST apps: verify `app` or route paths, NEVER `from mod import mod` or fake objects
   (bad: `from db import db; db.selectall()`; good: `from db import app; print([r.path for r in app.routes])`).
 - Import only names the create step will define (usually `app`, not a second `db` object).
-- For run todos, end with `expect success` or `expect True` (etc.).
-- Keep Goal one line. No code blocks. Return the FULL plan.md only.
 """
+
+
+def build_plan_system(prompt: str) -> str:
+    """Fill the plan template with an example in the requested language.
+
+    The example is one block either way, so the prompt does not grow — a 3B
+    model at 2048 ctx cannot afford a menu of languages, but showing it a
+    Python example for a C++ request is how plans ended up with no compile
+    step at all.
+    """
+    toolchain = toolchain_from_prompt(prompt) or DEFAULT_TOOLCHAIN
+    extra = PYTHON_RULES if toolchain.name == "python" else ""
+    return PLAN_SYSTEM.format(example=toolchain.plan_example, extra=extra)
 
 
 def run_plan_agent(memory: WorkspaceMemory, prompt: str) -> str:
@@ -43,7 +59,7 @@ def run_plan_agent(memory: WorkspaceMemory, prompt: str) -> str:
     # Only a tiny slice of the existing plan — not the whole history dump
     brief = current[:800]
     messages = [
-        SystemMessage(content=PLAN_SYSTEM),
+        SystemMessage(content=build_plan_system(prompt)),
         HumanMessage(
             content=(
                 f"User request:\n{prompt}\n\n"
