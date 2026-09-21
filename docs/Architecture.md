@@ -172,7 +172,33 @@ See [`.env.example`](../.env.example):
 | `AUTO_REPLAN` | `true` | One open-todo rewrite on plan smell |
 | `AUTO_SKIP` | `true` | Mark failed steps `[!]` and continue |
 | `AUTO_INSTALL` | `true` | `apt-get` a missing language toolchain, then retry the step |
-| `NUM_CTX` | `2048` | Keep small; do not raise casually |
+| `NUM_CTX` | `2048` | Floor, not a target. Raise it deliberately and priced — see below |
+
+### Choosing a context size
+
+`num_ctx` lives in `config.toml` beside the model it belongs to, because its
+cost is a property of the architecture: `kv_bytes_per_token` is
+`2 (K+V) x layers x kv_heads x head_dim x 2 bytes`, and the KV cache is
+`num_ctx x kv_bytes_per_token x parallel_slots`. For `qwen2.5:3b` that is
+36 KB per token — 72 MB at 2048, 360 MB at 10240.
+
+2048 is the floor the agent prompts were sized against, not a ceiling to
+defend. `./start-service.sh` prices each option against the host's RAM before
+you pick it, and probes the model afterwards for time-to-first-token and
+tok/s, so raising it is a measured decision rather than a hopeful one:
+
+```bash
+./start-service.sh --ctx 8192          # skip the picker
+./start-service.sh --memory laptop     # the OLLAMA_* caps, as a named set
+./start-service.sh --no-probe          # skip the timed probe
+```
+
+The memory caps themselves stay in `.env`; `config.toml` owns the model and its
+context. A hand-edited `.env` reports as profile `custom` and is left alone.
+
+Raising `num_ctx` does **not** license wider prompts. The core constraint is
+still one todo per call — a larger window buys bigger *slices* of a file
+alongside that todo, not a plan the model reads end to end.
 
 ### Toolchain persistence
 

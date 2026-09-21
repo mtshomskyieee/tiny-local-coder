@@ -20,8 +20,15 @@ tlc_memory_cgroup_delegated() {
 }
 
 tlc_warn_memory_cgroup() {
-  local limit="${OLLAMA_MEM_LIMIT:-5g}"
-  [[ "$limit" == "0" ]] && return 0        # limits deliberately disabled
+  local limit
+  # Prefer .env over the ambient environment: .env is the source of truth for
+  # the caps, and a profile that asks for none should not be nagged about them.
+  if declare -F tlc_env_get >/dev/null 2>&1; then
+    limit="$(tlc_env_get OLLAMA_MEM_LIMIT)"
+  else
+    limit="${OLLAMA_MEM_LIMIT:-5g}"
+  fi
+  [[ -z "$limit" || "$limit" == "0" ]] && return 0   # no cap requested
   tlc_memory_cgroup_delegated && return 0
 
   cat >&2 <<'MSG'

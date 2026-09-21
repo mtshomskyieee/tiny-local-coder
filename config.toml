@@ -2,11 +2,24 @@
 # Options: qwen2.5 | qwen3.5
 model = "qwen2.5"
 
+# num_ctx below is the working context. 2048 is the safe floor, not a target:
+# every agent prompt has to fit a single todo plus its slices inside it. Raise
+# it with `./start-service.sh --ctx 8192` (or the picker) and watch the KV
+# cache line in the startup memory summary — that is the whole cost.
+#
+# kv_bytes_per_token sizes that line:
+#   2 (K and V) x layers x kv_heads x head_dim x 2 bytes (f16)
+# It is a property of the architecture, so it lives here rather than in a
+# prompt or a magic number in the shell.
+
 [models."qwen2.5"]
 # https://ollama.com/library/qwen2.5:3b
 ollama = "qwen2.5:3b"
-num_ctx = 2048
+num_ctx = 32768
 min_ram_gb = 4
+# 36 layers x 2 KV heads x 128 head_dim x 2 (K+V) x 2 bytes
+kv_bytes_per_token = 36864
+max_ctx = 32768
 url = "https://ollama.com/library/qwen2.5:3b"
 
 [models."qwen3.5"]
@@ -16,4 +29,7 @@ url = "https://ollama.com/library/qwen2.5:3b"
 ollama = "qwen3.5:4b"
 num_ctx = 2048
 min_ram_gb = 8
+# 40 layers x 2 KV heads x 128 head_dim x 2 (K+V) x 2 bytes
+kv_bytes_per_token = 40960
+max_ctx = 32768
 url = "https://ollama.com/library/qwen3.5:4b"
