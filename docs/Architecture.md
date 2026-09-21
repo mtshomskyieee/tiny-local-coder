@@ -1,6 +1,6 @@
 # TinyLocalCoder Architecture
 
-File-backed LangGraph agents for **small local models** (e.g. qwen2.5:3b, `NUM_CTX≈2048`). Disk is long-term memory; the LLM usually sees **one step at a time**.
+File-backed LangGraph agents for **small local models** (e.g. qwen2.5:3b, `NUM_CTX=32768`). Disk is long-term memory; the LLM usually sees **one step at a time**.
 
 Hands-on CLI walks for common jobs: [`use-cases.md`](use-cases.md).  
 LangGraph agent wiring and diagrams: [`orchestration.md`](orchestration.md).
@@ -172,7 +172,7 @@ See [`.env.example`](../.env.example):
 | `AUTO_REPLAN` | `true` | One open-todo rewrite on plan smell |
 | `AUTO_SKIP` | `true` | Mark failed steps `[!]` and continue |
 | `AUTO_INSTALL` | `true` | `apt-get` a missing language toolchain, then retry the step |
-| `NUM_CTX` | `2048` | Floor, not a target. Raise it deliberately and priced — see below |
+| `NUM_CTX` | `32768` | Per model in `config.toml`. 2048 is the floor, not the default — see below |
 
 ### Choosing a context size
 

@@ -153,7 +153,7 @@ Design rationale and the small-model constraints that drive it: **[docs/Architec
 
 ## File memory
 
-Because context is small (`NUM_CTX=2048`), agents use disk as long-term memory:
+Because context is small relative to a real codebase, agents use disk as long-term memory:
 
 - `workspace/plan.md` — plan + checkboxes
 - `workspace/prototypes/` — generated code
@@ -204,7 +204,9 @@ model = "qwen2.5"   # or "qwen3.5"
 
 See `.env.example` for the other knobs:
 
-- `NUM_CTX=2048` (raise to 4096 only if you have headroom)
+- `NUM_CTX=32768` for qwen2.5:3b — its full trained window, 1.1 GB of KV cache.
+  `./start-service.sh` prices every size against your host before you pick one;
+  2048 is the floor the prompts were sized against, not a recommendation.
 - `AUTO_FIX` / `AUTO_FIX_MAX` — one code repair+retry per failed run step
 - `AUTO_REPLAN` — one open-todo rewrite when the failing step looks like a bad plan
 - `AUTO_SKIP` — mark failed steps `[!]` and continue
