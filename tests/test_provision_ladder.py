@@ -34,7 +34,15 @@ _MAKE_MISSING = {
 
 
 @pytest.fixture
-def pipeline(settings: Settings, memory: WorkspaceMemory) -> Pipeline:
+def no_toolchain(monkeypatch: pytest.MonkeyPatch):
+    """The app container ships without a compiler; this host has one."""
+    monkeypatch.setattr(toolchains_mod.shutil, "which", lambda name: None)
+
+
+@pytest.fixture
+def pipeline(
+    settings: Settings, memory: WorkspaceMemory, no_toolchain
+) -> Pipeline:
     memory.write_plan(_CPP_PLAN)
     memory.write_last_failure(dict(_MAKE_MISSING))
     return Pipeline(memory=memory, settings=settings)
@@ -99,3 +107,25 @@ def test_a_missing_built_binary_is_not_provisioned(
         "stderr": "/bin/sh: 1: ./square_root: not found\n",
     }
     assert pipeline._provision_and_retry({}, failure) is None
+
+
+def test_a_failed_install_does_not_retry_forever(
+    pipeline: Pipeline, memory: WorkspaceMemory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A stale last_failure would re-classify as `environment` next pass."""
+    monkeypatch.setattr(builder_mod, "provision", lambda *_: (False, "no network"))
+    pipeline._provision_and_retry({"mode": "execute"}, dict(_MAKE_MISSING))
+    assert memory.read_last_failure() in (None, {})
+
+
+def test_a_failed_install_with_auto_skip_off_still_clears_the_failure(
+    memory: WorkspaceMemory, settings: Settings, no_toolchain, monkeypatch
+) -> None:
+    memory.write_plan(_CPP_PLAN)
+    memory.write_last_failure(dict(_MAKE_MISSING))
+    settings.auto_skip = False
+    monkeypatch.setattr(builder_mod, "provision", lambda *_: (False, "no network"))
+    pipe = Pipeline(memory=memory, settings=settings)
+    result = pipe._provision_and_retry({"mode": "execute"}, dict(_MAKE_MISSING))
+    assert result["status"] == "failed"
+    assert memory.read_last_failure() in (None, {})

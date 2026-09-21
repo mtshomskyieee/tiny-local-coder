@@ -255,7 +255,12 @@ class TestBuildFailureRecovery:
         # Real prose is still junk
         assert is_junk_run_failure({"command": "Define the struct"})
 
-    def test_missing_build_tool_is_an_environment_failure(self) -> None:
+    def test_missing_build_tool_is_an_environment_failure(
+        self, monkeypatch
+    ) -> None:
+        import tinylocalcoder.toolchains as toolchains
+
+        monkeypatch.setattr(toolchains.shutil, "which", lambda name: None)
         failure = {
             "command": "make",
             "exit_code": 127,
@@ -263,6 +268,15 @@ class TestBuildFailureRecovery:
         }
         assert classify_failure(failure) == "environment"
         assert missing_toolchain_binaries(failure) == ["make"]
+
+    def test_a_tool_that_is_installed_is_a_code_failure(self) -> None:
+        """"not found" in a tool's own output is not a missing interpreter."""
+        failure = {
+            "command": "python3 -m pytest",
+            "exit_code": 4,
+            "stderr": "ERROR: file or directory not found: tests\n",
+        }
+        assert classify_failure(failure) == "code"
 
     def test_missing_built_binary_is_not_an_environment_failure(self) -> None:
         """`./square_root: not found` means the build failed, not that apt is needed."""

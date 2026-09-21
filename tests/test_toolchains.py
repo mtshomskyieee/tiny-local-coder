@@ -149,7 +149,17 @@ class TestDiagnostics:
 class TestMissingBinaries:
     """Exit 127 is an environment problem, and must be told apart from a bug."""
 
-    def test_shell_not_found(self) -> None:
+    @pytest.fixture
+    def no_make(self, monkeypatch: pytest.MonkeyPatch):
+        """The app container ships without a compiler; this host has one."""
+        import tinylocalcoder.toolchains as mod
+
+        real = mod.shutil.which
+        monkeypatch.setattr(
+            mod.shutil, "which", lambda n: None if n in {"make", "g++"} else real(n)
+        )
+
+    def test_shell_not_found(self, no_make) -> None:
         assert missing_binaries("/bin/sh: 1: make: not found\n") == ["make"]
         assert toolchain_for_binary("make").name == "cpp"
 
@@ -157,9 +167,31 @@ class TestMissingBinaries:
         """`./square_root: not found` means the build failed, not that apt is needed."""
         assert toolchain_for_binary("square_root") is None
 
-    def test_command_fallback_ignores_relative_binaries(self) -> None:
+    def test_command_fallback_ignores_relative_binaries(self, no_make) -> None:
         assert missing_binaries("not found", command="./square_root") == []
         assert missing_binaries("not found", command="make") == ["make"]
+
+    def test_a_tool_that_is_installed_is_never_reported_missing(self) -> None:
+        """pytest prints "not found" about its own arguments, not its interpreter.
+
+        Without the PATH check this sent an ordinary test failure to apt-get.
+        """
+        assert (
+            missing_binaries(
+                "ERROR: file or directory not found: tests\n",
+                command="python3 -m pytest",
+            )
+            == []
+        )
+
+
+def test_run_subcommands_are_behavioral_not_build_steps() -> None:
+    """`go run` builds *and* runs, so it is the smoke step, not the compile step."""
+    assert is_compile_command("go build -o main main.go")
+    assert not is_compile_command("go run main.go")
+    assert is_compile_command("cargo build")
+    assert not is_compile_command("cargo run")
+    assert not is_compile_command("cargo test")
 
 
 def test_toolchain_from_prompt() -> None:

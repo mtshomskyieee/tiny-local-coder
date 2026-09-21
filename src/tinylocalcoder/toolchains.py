@@ -504,6 +504,11 @@ def all_source_filenames() -> tuple[str, ...]:
     return tuple(sorted(out))
 
 
+# Subcommands that execute the program rather than only building it, even
+# though the driver binary is also the compiler (`go run`, `cargo run`).
+_RUN_SUBCOMMANDS = {"run", "test", "bench"}
+
+
 def is_compile_command(command: str) -> bool:
     """True for build steps (as opposed to behavioral smoke runs)."""
     c = (command or "").strip()
@@ -511,10 +516,17 @@ def is_compile_command(command: str) -> bool:
         return False
     if "py_compile" in c:
         return True
+    tokens = c.split()
     first = Path(_first_token(c)).name
     for tc in TOOLCHAINS.values():
-        if first in tc.compile_prefixes:
-            return True
+        if first not in tc.compile_prefixes:
+            continue
+        # `go build` builds; `go run` builds *and* runs, so it is the
+        # behavioral step and must not consume the compile slot.
+        rest = [t for t in tokens[1:] if not t.startswith("-")]
+        if rest and rest[0] in _RUN_SUBCOMMANDS:
+            return False
+        return True
     # `node --check foo.js`, `ruby -c foo.rb` are syntax checks, not behavior
     return bool(re.search(r"\s(--check|-c)\s", c)) and first in {"node", "ruby"}
 
@@ -618,19 +630,31 @@ _MISSING_CMD_RE = re.compile(
 
 
 def missing_binaries(error_text: str, command: str = "") -> list[str]:
-    """Binaries a shell/exec error says are absent (e.g. `make: not found`)."""
+    """Binaries a shell/exec error says are absent (e.g. `make: not found`).
+
+    A name that actually resolves on PATH is never reported: plenty of tools
+    print "not found" about their own arguments (`pytest` exiting with
+    "file or directory not found: tests"), and treating that as a missing
+    interpreter would send a perfectly ordinary test failure off to apt-get.
+    """
     names: list[str] = []
     for m in _MISSING_CMD_RE.finditer(error_text or ""):
         for g in m.groups():
             if not g:
                 continue
             base = Path(g.strip()).name
-            if base and base not in names:
+            if base and base not in names and shutil.which(base) is None:
                 names.append(base)
     if not names and command:
         first = _first_token(command)
-        if first and not first.startswith("./") and "not found" in (error_text or "").lower():
-            names.append(Path(first).name)
+        base = Path(first).name if first else ""
+        if (
+            base
+            and not first.startswith("./")
+            and "not found" in (error_text or "").lower()
+            and shutil.which(base) is None
+        ):
+            names.append(base)
     return names
 
 

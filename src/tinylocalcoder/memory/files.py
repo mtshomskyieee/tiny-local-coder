@@ -152,15 +152,21 @@ def is_valid_run_command(command: str) -> bool:
 
     The allowlist of first tokens comes from the toolchain registry, so adding
     a language automatically makes its build/run commands legal verify steps.
-    Only the first segment of an `&&` chain is checked — that is what decides
-    whether the line is a command at all rather than prose.
+    EVERY segment of an `&&` / `||` / `;` chain must pass, so a legitimate
+    prefix cannot carry an unrelated command along behind it.
     """
     c = (command or "").strip()
     if not c:
         return False
     if c.startswith("PYTHONPATH="):
         return "python3" in c or "python " in c or "pytest" in c
-    segment = re.split(r"&&|\|\||;", c, maxsplit=1)[0].strip()
+    segments = [seg.strip() for seg in re.split(r"&&|\|\||;", c)]
+    if not segments or any(not seg for seg in segments):
+        return False
+    return all(_segment_is_run_command(seg) for seg in segments)
+
+
+def _segment_is_run_command(segment: str) -> bool:
     segment = _strip_env_prefix(segment)
     if not segment:
         return False

@@ -223,6 +223,10 @@ class Pipeline:
             skipped = self._auto_skip_failed_step(
                 state, reason=f"missing toolchain ({note})"
             )
+            # Drop the failure even when auto-skip is off: leaving it on disk
+            # re-classifies as `environment` on the next pass and retries the
+            # install we just watched fail, until the budget runs out.
+            self.memory.clear_last_failure()
             result["output"] = (
                 f"Environment error — {note}.\n"
                 + (
