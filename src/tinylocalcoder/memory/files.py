@@ -9,7 +9,7 @@ from pathlib import Path
 
 from tinylocalcoder.config import Settings, get_settings
 from tinylocalcoder.memory.chunking import retrieve_chunks
-from tinylocalcoder.memory.index import FileIndex
+from tinylocalcoder.memory.index import FileIndex, build_chunk_entries
 from tinylocalcoder.toolchains import (
     all_run_prefixes,
     all_source_extensions,
@@ -292,31 +292,21 @@ class WorkspaceMemory:
         self.index.rebuild("exec", self.exec_log_path)
 
     def reindex_prototypes(self) -> None:
-        entries: list[dict] = []
-        skip = {".index", "plan.md", "ask.md", "exec.log", "session.md"}
-        for path in sorted(self.root.rglob("*")):
-            if not path.is_file():
-                continue
-            rel = path.relative_to(self.root)
-            if rel.parts and rel.parts[0] == ".index":
-                continue
-            if rel.name in skip and len(rel.parts) == 1:
-                continue
-            text = path.read_text(encoding="utf-8", errors="replace")
-            from tinylocalcoder.memory.chunking import split_lines_into_chunks
+        """Rebuild the prototypes chunk index from the live workspace.
 
-            for c in split_lines_into_chunks(text, self.settings.max_chunk_chars):
-                entries.append(
-                    {
-                        "chunk_id": f"{rel}:{c.chunk_id}",
-                        "start_line": c.start_line,
-                        "end_line": c.end_line,
-                        "text": c.text,
-                        "path": str(rel),
-                    }
-                )
+        Never walks archive/ or .index/ — see index.SKIP_DIRS for why that is
+        load-bearing rather than merely tidy.
+        """
+        entries = build_chunk_entries(
+            self.root,
+            self.root,
+            max_chunk_chars=self.settings.max_chunk_chars,
+            max_file_bytes=self.settings.max_index_file_bytes,
+            max_total_chars=self.settings.max_index_total_chars,
+            skip_top_level=frozenset({"plan.md", "ask.md", "exec.log", "session.md"}),
+        )
         self.index.path_for("prototypes").write_text(
-            __import__("json").dumps(entries, indent=2), encoding="utf-8"
+            json.dumps(entries), encoding="utf-8"
         )
 
     def read_plan(self) -> str:
@@ -434,7 +424,9 @@ class WorkspaceMemory:
         archive_root.mkdir(parents=True, exist_ok=True)
         dest.mkdir(parents=True, exist_ok=False)
 
-        skip_names = {"archive"}
+        # .index/ is derived and gets rebuilt on demand; copying it in is what
+        # let an old prototypes.json be re-ingested and grow without bound.
+        skip_names = {"archive", ".index"}
         copied = 0
         for item in sorted(self.root.iterdir()):
             if item.name in skip_names:
@@ -483,7 +475,9 @@ class WorkspaceMemory:
 
         moved = 0
         for item in sorted(self.root.iterdir()):
-            if item.name == "archive":
+            # Same reason as archive_workspace: .index/ is derived, and
+            # archiving it feeds the next reindex its own output.
+            if item.name in {"archive", ".index"}:
                 continue
             target = dest / item.name
             shutil.move(str(item), str(target))
@@ -517,6 +511,9 @@ class WorkspaceMemory:
         self.reindex_plan()
         self.reindex_ask()
         self.reindex_exec()
+        # The live .index/ was kept in place, so drop the now-stale prototype
+        # chunks rather than leaving the cleared workspace describing the old one.
+        self.reindex_prototypes()
         self.clear_last_failure()
         return dest
 
@@ -605,11 +602,26 @@ class WorkspaceMemory:
     def prototype_exists(self, rel_path: str) -> bool:
         return self.resolve_path(rel_path).exists()
 
-    def list_files(self) -> list[str]:
+    def list_files(self, include_archive: bool = False) -> list[str]:
+        """Workspace-relative files, excluding archive/ and .index/.
+
+        Archived sessions are not the working tree. Every caller that feeds
+        this list to a tool or an LLM wants live files only, and when the
+        exclusion was each caller's job most of them remembered and some did
+        not — /test walked the whole archive looking for test files. Exclude
+        by default; `include_archive=True` is there for anything that really
+        wants the history.
+        """
         files: list[str] = []
         for path in sorted(self.root.rglob("*")):
-            if path.is_file() and ".index" not in path.parts:
-                files.append(str(path.relative_to(self.root)))
+            if not path.is_file():
+                continue
+            parts = path.relative_to(self.root).parts
+            if ".index" in parts:
+                continue
+            if not include_archive and parts and parts[0] == "archive":
+                continue
+            files.append(str(path.relative_to(self.root)))
         return files
 
     def read_workspace_file(self, rel_path: str) -> str:
@@ -882,7 +894,7 @@ class WorkspaceMemory:
         return ", ".join(parts)
 
     def find_module_py(self, module_name: str) -> str | None:
-        """Locate module_name.py under the workspace (skip archive/.index)."""
+        """Locate module_name.py under the workspace (list_files skips archive)."""
         name = (module_name or "").split(".", 1)[0].strip()
         if not name or not name.isidentifier():
             return None
@@ -892,8 +904,6 @@ class WorkspaceMemory:
         hits: list[str] = []
         for rel in self.list_files():
             rel_n = rel.replace("\\", "/")
-            if rel_n.startswith("archive/") or "/.index/" in f"/{rel_n}/":
-                continue
             if rel_n == direct or rel_n.endswith(f"/{name}.py"):
                 hits.append(rel_n)
         if not hits:

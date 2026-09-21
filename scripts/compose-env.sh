@@ -1,4 +1,5 @@
-# Source after ROOT is set. Exports MODEL_NAME, NUM_CTX, TLC_MODEL_KEY
+# Source after ROOT is set. Exports MODEL_NAME, NUM_CTX, TLC_MODEL_KEY,
+# MIN_RAM_GB, KV_BYTES_PER_TOKEN, MAX_CTX, CTX_OPTIONS
 # from the repo-root config.toml (qwen2.5 | qwen3.5). POSIX awk only —
 # macOS /usr/bin/python3 is often too old for tomllib.
 if [[ -z "${ROOT:-}" ]]; then
@@ -40,6 +41,15 @@ eval "$(
       if (k == "ollama") ollama = v
       if (k == "num_ctx") num_ctx = v
       if (k == "min_ram_gb") min_ram = v
+      if (k == "kv_bytes_per_token") kv = v
+      if (k == "max_ctx") max_ctx = v
+      if (k == "ctx_options") {
+        # TOML array on one line -> space separated list
+        gsub(/[\[\],]/, " ", v)
+        gsub(/[[:space:]]+/, " ", v)
+        gsub(/^ | $/, "", v)
+        ctx_options = v
+      }
     }
     END {
       if (key == "") {
@@ -52,11 +62,17 @@ eval "$(
       }
       if (num_ctx == "") num_ctx = 2048
       if (min_ram == "") min_ram = 0
+      if (kv == "") kv = 0
+      if (max_ctx == "") max_ctx = 0
+      if (ctx_options == "") ctx_options = ""
       print "MODEL_NAME=" ollama
       print "NUM_CTX=" num_ctx
       print "TLC_MODEL_KEY=" key
       print "MIN_RAM_GB=" min_ram
+      print "KV_BYTES_PER_TOKEN=" kv
+      print "MAX_CTX=" max_ctx
+      print "CTX_OPTIONS=\"" ctx_options "\""
     }
   ' "$config"
 )"
-export MODEL_NAME NUM_CTX TLC_MODEL_KEY MIN_RAM_GB
+export MODEL_NAME NUM_CTX TLC_MODEL_KEY MIN_RAM_GB KV_BYTES_PER_TOKEN MAX_CTX CTX_OPTIONS

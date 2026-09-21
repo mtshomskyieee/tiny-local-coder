@@ -2,11 +2,35 @@
 # Options: qwen2.5 | qwen3.5
 model = "qwen2.5"
 
+# num_ctx below is the working context. 2048 is the safe floor, not a target:
+# every agent prompt has to fit a single todo plus its slices inside it. Raise
+# it with `./start-service.sh --ctx 8192` (or the picker) and watch the KV
+# cache line in the startup memory summary — that is the whole cost.
+#
+# kv_bytes_per_token sizes that line:
+#   2 (K and V) x layers x kv_heads x head_dim x 2 bytes (f16)
+# It is a property of the architecture, so it lives here rather than in a
+# prompt or a magic number in the shell. Values below are read from each
+# model's published config.json, not estimated.
+#
+# max_ctx is the trained window. Past it a model still runs — Ollama applies
+# no rope scaling of its own — it just degrades, so the picker warns rather
+# than refuses.
+#
+# The two models are not comparable on context: qwen3.5:4b's window is 8x
+# qwen2.5:3b's, but each token costs 3.5x as much cache, so on an 11 GB host
+# qwen3.5 runs out of room around 16k while qwen2.5 reaches its full 32k.
+
 [models."qwen2.5"]
 # https://ollama.com/library/qwen2.5:3b
 ollama = "qwen2.5:3b"
-num_ctx = 2048
+num_ctx = 32768
 min_ram_gb = 4
+# 36 layers x 2 KV heads x 128 head_dim x 2 (K+V) x 2 bytes
+kv_bytes_per_token = 36864
+max_ctx = 32768
+# Trained window is 32768, so the ladder ends there — nothing to trade past it.
+ctx_options = [2048, 4096, 8192, 10240, 16384, 20480, 32768]
 url = "https://ollama.com/library/qwen2.5:3b"
 
 [models."qwen3.5"]
@@ -16,4 +40,11 @@ url = "https://ollama.com/library/qwen2.5:3b"
 ollama = "qwen3.5:4b"
 num_ctx = 2048
 min_ram_gb = 8
+# 32 layers x 4 KV heads x 256 head_dim x 2 (K+V) x 2 bytes = 128 KB/token,
+# 3.5x qwen2.5:3b. The wider window is not the free part; the cache is.
+kv_bytes_per_token = 131072
+max_ctx = 262144
+# 256K of trained window, but 128 KB/token: everything past 16384 needs a host
+# bigger than a laptop. The picker prices each one rather than hiding them.
+ctx_options = [2048, 4096, 8192, 10240, 16384, 20480, 32768, 65536, 131072, 196608, 262144]
 url = "https://ollama.com/library/qwen3.5:4b"

@@ -116,12 +116,7 @@ def plan_requirement_gaps(memory: WorkspaceMemory, requirement: str) -> list[str
     """Deterministic gaps: stub start scripts and missing required endpoints."""
     gaps: list[str] = []
     req = (requirement or "").lower()
-    files = [
-        p.replace("\\", "/")
-        for p in memory.list_files()
-        if ".index" not in p.replace("\\", "/").split("/")
-        and not p.replace("\\", "/").startswith("archive/")
-    ]
+    files = [p.replace("\\", "/") for p in memory.list_files()]
     py_blob = ""
     for rel in files:
         if rel.endswith(".py"):
@@ -174,11 +169,7 @@ def _run_fix_plan(
     _trace(pipeline, log_lines, "fix-plan » 1/3 reading requirement and plan.md")
     requirement = pipeline.memory.last_user_requirement(extra)
     current = pipeline.memory.read_plan().strip()
-    files = [
-        p
-        for p in pipeline.memory.list_files()
-        if not p.replace("\\", "/").startswith(("archive/", ".index/"))
-    ]
+    files = pipeline.memory.list_files()
     req_one = re.sub(r"\s+", " ", requirement).strip()
     _trace(
         pipeline,
