@@ -14,7 +14,12 @@ def _apply_env_flags(args: argparse.Namespace) -> None:
         os.environ["AUTO_SKIP"] = "true" if args.auto_skip else "false"
     if getattr(args, "auto_fix", None) is not None:
         os.environ["AUTO_FIX"] = "true" if args.auto_fix else "false"
-    if getattr(args, "auto_skip", None) is not None or getattr(args, "auto_fix", None) is not None:
+    if getattr(args, "auto_install", None) is not None:
+        os.environ["AUTO_INSTALL"] = "true" if args.auto_install else "false"
+    if any(
+        getattr(args, name, None) is not None
+        for name in ("auto_skip", "auto_fix", "auto_install")
+    ):
         get_settings.cache_clear()
 
 
@@ -34,6 +39,12 @@ def main(argv: list[str] | None = None) -> None:
         action=argparse.BooleanOptionalAction,
         default=None,
         help="Auto-repair and retry failed execute steps (default: on)",
+    )
+    tui_p.add_argument(
+        "--auto-install",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help="Install a missing language toolchain via apt-get (default: on)",
     )
 
     api_p = sub.add_parser("api", help="Run the FastAPI server")

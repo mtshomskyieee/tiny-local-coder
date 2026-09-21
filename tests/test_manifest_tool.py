@@ -102,3 +102,31 @@ def test_focus_hint_that_matches_nothing_fails_open(tmp_path: Path) -> None:
     mem = _memory(tmp_path)
     (tmp_path / "a.py").write_text("a\n", encoding="utf-8")
     assert build_manifest(mem, focus_prefixes=["nope/"]) == ["a.py"]
+
+
+def test_collect_includes_cpp_makefile_and_popular_langs(tmp_path: Path) -> None:
+    """C/C++, Makefile, Go, Rust, Ruby must be inventoriable for /review."""
+    (tmp_path / "src").mkdir()
+    (tmp_path / "src" / "foo.cpp").write_text("int main(){}\n", encoding="utf-8")
+    (tmp_path / "Makefile").write_text("all:\n\techo ok\n", encoding="utf-8")
+    (tmp_path / "main.go").write_text("package main\n", encoding="utf-8")
+    (tmp_path / "lib.rs").write_text("fn main() {}\n", encoding="utf-8")
+    (tmp_path / "app.rb").write_text("puts 'hi'\n", encoding="utf-8")
+    (tmp_path / "go.mod").write_text("module example\n", encoding="utf-8")
+    (tmp_path / "noise.png").write_bytes(b"\x89PNG")
+
+    paths = collect_manifest_paths(tmp_path)
+    assert "src/foo.cpp" in paths
+    assert "Makefile" in paths
+    assert "main.go" in paths
+    assert "lib.rs" in paths
+    assert "app.rb" in paths
+    assert "go.mod" in paths
+    assert "noise.png" not in paths
+
+    mem = _memory(tmp_path)
+    _, written = write_manifest(mem)
+    assert written == paths
+    body = mem.read_prototype("manifest.txt")
+    assert "src/foo.cpp" in body
+    assert "Makefile" in body

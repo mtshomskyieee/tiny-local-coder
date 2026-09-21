@@ -355,6 +355,119 @@ def _review_generic(path: str, text: str) -> FileReview:
     return rev
 
 
+_MAKE_TARGET_RE = re.compile(r"^([^\s:#=][^:#=]*):([^=]|$)")
+_CPP_SUFFIXES = frozenset({".c", ".cc", ".cpp", ".cxx", ".h", ".hh", ".hpp", ".hxx"})
+_MAKE_BASENAMES = frozenset({"makefile", "gnumakefile"})
+
+
+def _review_makefile(path: str, text: str) -> FileReview:
+    """Catch the classic 'missing separator' / orphan-recipe failures."""
+    rev = FileReview(path=path)
+    if not text.strip():
+        rev.findings.append(Finding("medium", "Makefile is empty."))
+        rev.summary = "Empty"
+        return rev
+
+    def add(sev: Severity, msg: str, line: int | None = None) -> None:
+        if any(f.message == msg and f.line == line for f in rev.findings):
+            return
+        rev.findings.append(Finding(sev, msg, line))
+
+    saw_target = False
+    for i, raw in enumerate(text.splitlines(), start=1):
+        if not raw.strip() or raw.lstrip().startswith("#"):
+            continue
+        # Recipe line: must be tab-indented after a target
+        if raw.startswith("\t"):
+            if not saw_target:
+                add(
+                    "high",
+                    "Recipe line with no preceding target — Make reports "
+                    "'missing separator'.",
+                    i,
+                )
+            continue
+        if raw.startswith(" ") and not raw.startswith("\t"):
+            # Indented with spaces — classic separator error if this is a recipe
+            stripped = raw.lstrip(" ")
+            if stripped and not stripped.startswith("#") and "=" not in stripped.split(":", 1)[0]:
+                # Heuristic: looks like a command (has a known make var or shell-ish token)
+                if any(
+                    tok in stripped
+                    for tok in ("$(", "${", "rm ", "g++", "gcc", "clang", "./", "-o ")
+                ) or (saw_target and not _MAKE_TARGET_RE.match(raw)):
+                    add(
+                        "high",
+                        "Recipe indented with spaces instead of a tab — "
+                        "Make reports 'missing separator'.",
+                        i,
+                    )
+                    continue
+        if _MAKE_TARGET_RE.match(raw) and not raw.lstrip().startswith("."):
+            # Variable assignments like CC = g++ are not targets; skip FOO = bar
+            if "=" in raw.split(":", 1)[0]:
+                continue
+            saw_target = True
+
+    # Orphan: non-empty makefile with recipes but we already flagged; also
+    # bare command lines that look like recipes without a target
+    lines = text.splitlines()
+    for i, raw in enumerate(lines, start=1):
+        s = raw.strip()
+        if not s or s.startswith("#"):
+            continue
+        if raw.startswith("\t") or raw.startswith(" "):
+            continue
+        if _MAKE_TARGET_RE.match(raw) and "=" not in raw.split(":", 1)[0]:
+            continue
+        if "=" in raw:
+            continue  # variable assignment
+        # Bare recipe-looking line at column 0 (e.g. `$(CC) ...`)
+        if "$(" in s or s.startswith(("rm ", "g++", "gcc", "clang")):
+            add(
+                "high",
+                "Command-like line is not a Make target and is not tab-indented "
+                "— orphan recipe / missing separator.",
+                i,
+            )
+
+    if not rev.findings:
+        rev.findings.append(Finding("info", "Makefile structure looks OK under heuristics."))
+        rev.summary = "OK"
+    else:
+        counts: dict[str, int] = {}
+        for f in rev.findings:
+            counts[f.severity] = counts.get(f.severity, 0) + 1
+        bits = [f"{counts[s]} {s}" for s in ("high", "medium", "low", "info") if s in counts]
+        rev.summary = ", ".join(bits)
+    return rev
+
+
+def _review_cpp(path: str, text: str) -> FileReview:
+    rev = FileReview(path=path)
+    if not text.strip():
+        rev.findings.append(Finding("medium", "File is empty."))
+        rev.summary = "Empty"
+        return rev
+
+    def add(sev: Severity, msg: str, line: int | None = None) -> None:
+        if any(f.message == msg for f in rev.findings):
+            return
+        rev.findings.append(Finding(sev, msg, line))
+
+    for m in _TODO_RE.finditer(text):
+        add("low", f"Leftover marker `{m.group(1)}`.", _line_of(text, m.start()))
+
+    if not rev.findings:
+        rev.findings.append(
+            Finding("info", f"{len(text.splitlines())} lines — no C/C++ heuristic issues flagged.")
+        )
+        rev.summary = "OK"
+    else:
+        rev.summary = f"{len(rev.findings)} note(s)"
+    return rev
+
+
 def _test_paths(all_paths: list[str]) -> set[str]:
     return {
         p.replace("\\", "/")
@@ -381,13 +494,19 @@ def _module_covered(path: str, test_paths: set[str]) -> bool:
 def review_file(path: str, text: str, *, all_paths: list[str]) -> FileReview:
     """Opinionated review for one workspace-relative file."""
     tests = _test_paths(all_paths)
-    suffix = Path(path).suffix.lower()
+    rel = Path(path)
+    suffix = rel.suffix.lower()
+    name = rel.name.lower()
     if suffix == ".py":
         return _review_python(path, text, has_tests=_module_covered(path, tests))
     if suffix in {".md", ".rst"}:
         return _review_markdown(path, text)
     if suffix == ".json":
         return _review_json(path, text)
+    if name in _MAKE_BASENAMES or name.endswith(".mk"):
+        return _review_makefile(path, text)
+    if suffix in _CPP_SUFFIXES:
+        return _review_cpp(path, text)
     return _review_generic(path, text)
 
 

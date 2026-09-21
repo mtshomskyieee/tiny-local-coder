@@ -9,6 +9,14 @@ from langchain_core.messages import HumanMessage, SystemMessage
 
 from tinylocalcoder.llm import invoke_llm, message_text
 from tinylocalcoder.memory.files import WorkspaceMemory
+from tinylocalcoder.toolchains import (
+    Diagnostic,
+    missing_binaries,
+    parse_diagnostics,
+    toolchain_for_binary,
+    toolchain_for_command,
+    toolchain_for_path,
+)
 
 
 FIX_SYSTEM = """You troubleshoot a failed local workspace command.
@@ -91,6 +99,13 @@ def _norm(path: str) -> str:
 
 def extract_paths_from_error(text: str) -> list[str]:
     found: list[str] = []
+    # Build diagnostics first — a gcc/make/ld failure names the offending file
+    # in a shape no Python traceback regex matches, and without this the fix
+    # agent is handed an error with no file to look at.
+    for diag in parse_diagnostics(text or ""):
+        p = _norm(diag.file)
+        if p and p not in found:
+            found.append(p)
     for m in _TRACE_FILE_RE.finditer(text or ""):
         raw = m.group(1)
         # Strip container absolute prefix down to workspace-relative if possible
@@ -130,6 +145,13 @@ def _list_dir(memory: WorkspaceMemory, rel_dir: str, limit: int = 40) -> str:
 def gather_fix_context(memory: WorkspaceMemory, error_text: str) -> dict:
     paths = extract_paths_from_error(error_text)
     err = error_text or ""
+    # A make failure often names only the Makefile; pull in the sources it
+    # builds so the model can actually see what the recipe is compiling.
+    if any(Path(p).name.lower().startswith(("makefile", "gnumakefile")) for p in paths):
+        for rel in memory.list_files():
+            tc = toolchain_for_path(rel)
+            if tc and tc.name in {"c", "cpp"} and rel not in paths:
+                paths.append(rel)
     # Only peek at src helpers when the failure actually mentions src/
     if "src/" in err or "src." in err or "from src" in err or "import src" in err:
         for extra in ("src/main.py", "src/api.py", "src/__init__.py"):
@@ -270,6 +292,15 @@ def apply_heuristic_fixes(memory: WorkspaceMemory, error_text: str) -> list[str]
                         memory.write_prototype(path, new)
                         applied.append(f"WRITE `{path}` (port 8000 → 8888)")
 
+    # Makefile "missing separator" — recipe lines must be TAB-indented. This is
+    # a pure formatting bug; no reason to spend a model call on it.
+    for diag in parse_diagnostics(err):
+        if "missing separator" not in diag.message.lower():
+            continue
+        note = _fix_makefile_tabs(memory, diag.file)
+        if note:
+            applied.append(note)
+
     # Stub start_*.sh named in the failure/hint — write a bounded app check
     # (must exit; do not leave uvicorn running).
     start_paths = list(extract_paths_from_error(err))
@@ -284,6 +315,49 @@ def apply_heuristic_fixes(memory: WorkspaceMemory, error_text: str) -> list[str]
             applied.append(note)
 
     return applied
+
+
+_MAKE_VAR_RE = re.compile(r"^[A-Za-z_][\w.]*\s*[:+?]?=")
+_MAKE_TARGET_RE = re.compile(r"^[^\s:][^:=]*:(?!=)")
+
+
+def _fix_makefile_tabs(memory: WorkspaceMemory, path: str) -> str | None:
+    """Re-indent space-indented Makefile recipe lines with a TAB."""
+    rel = _norm(path)
+    if not Path(rel).name.lower().startswith(("makefile", "gnumakefile")):
+        return None
+    if not memory.prototype_exists(rel):
+        return None
+    lines = memory.read_prototype(rel).splitlines()
+    out: list[str] = []
+    in_recipe = False
+    changed = False
+    for line in lines:
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#"):
+            out.append(line)
+            continue
+        if line.startswith("\t"):
+            in_recipe = True
+            out.append(line)
+            continue
+        if _MAKE_TARGET_RE.match(line) and not line[0].isspace():
+            in_recipe = True
+            out.append(line)
+            continue
+        if _MAKE_VAR_RE.match(line) and not line[0].isspace():
+            in_recipe = False
+            out.append(line)
+            continue
+        if in_recipe and line[:1].isspace():
+            out.append("\t" + stripped)
+            changed = True
+            continue
+        out.append(line)
+    if not changed:
+        return None
+    memory.write_prototype(rel, "\n".join(out) + "\n")
+    return f"WRITE `{rel}` (recipe lines re-indented with TAB)"
 
 
 def _fastapi_import_module(memory: WorkspaceMemory) -> str:
@@ -484,17 +558,67 @@ def classify_plan_smell(
 
 
 def is_junk_run_failure(failure: dict | None, error_blob: str = "") -> bool:
-    """True when the failed command is not a valid verify command (e.g. bare Define)."""
+    """True when the failed command is not a verify command at all (bare prose).
+
+    `is_valid_run_command` is registry-backed, so a real build tool such as
+    `make` is no longer junk — see `classify_failure` for what happens to it.
+    """
     from tinylocalcoder.memory.files import is_valid_run_command
 
     failure = failure or {}
     cmd = str(failure.get("command") or "")
-    if cmd and not is_valid_run_command(cmd):
-        return True
-    err = error_blob or str(failure.get("stderr") or "")
-    if "not found" in err.lower() and cmd and not is_valid_run_command(cmd):
-        return True
-    return False
+    return bool(cmd) and not is_valid_run_command(cmd)
+
+
+def failure_blob(failure: dict | None) -> str:
+    """Everything the command printed, for pattern matching."""
+    failure = failure or {}
+    return "\n".join(
+        str(failure.get(k) or "") for k in ("stderr", "stdout", "error")
+    )
+
+
+def missing_toolchain_binaries(failure: dict | None, error_blob: str = "") -> list[str]:
+    """Absent binaries that a registered toolchain could install.
+
+    A missing `make` is an environment problem apt-get can solve. A missing
+    `./square_root` is not — it means the build step never produced it, which
+    is a code or plan problem.
+    """
+    failure = failure or {}
+    err = error_blob or failure_blob(failure)
+    cmd = str(failure.get("command") or "")
+    out: list[str] = []
+    for name in missing_binaries(err, cmd):
+        if toolchain_for_binary(name) is not None and name not in out:
+            out.append(name)
+    return out
+
+
+def classify_failure(failure: dict | None, error_blob: str = "") -> str:
+    """One of: junk | environment | code | plan.
+
+    `environment` is the case the recovery ladder used to get wrong: `make:
+    not found` was reported as a code failure, the fix agent had nothing to
+    patch, and the step was skipped.
+    """
+    failure = failure or {}
+    if is_junk_run_failure(failure, error_blob):
+        return "junk"
+    if missing_toolchain_binaries(failure, error_blob):
+        return "environment"
+    return "code"
+
+
+def _language_hint(failure: dict | None, diagnostics: list[Diagnostic]) -> str:
+    """One line telling the model which language it is looking at."""
+    tc = toolchain_for_command(str((failure or {}).get("command") or ""))
+    if tc is None:
+        for diag in diagnostics:
+            tc = toolchain_for_path(diag.file)
+            if tc is not None:
+                break
+    return tc.fix_hint if tc else ""
 
 
 def run_fix_agent(
@@ -506,12 +630,15 @@ def run_fix_agent(
     failure = memory.read_last_failure()
     blob = error_text or ""
     if not blob and failure:
+        # stderr before stdout: the prompt only carries the first 2500 chars of
+        # this blob, and a chatty build can otherwise push the actual `error:`
+        # line out of the window entirely.
         blob = "\n".join(
             [
                 f"command: {failure.get('command', '')}",
                 f"exit: {failure.get('exit_code', '')}",
-                f"stdout:\n{failure.get('stdout', '')}",
                 f"stderr:\n{failure.get('stderr', '')}",
+                f"stdout:\n{failure.get('stdout', '')}",
                 f"error: {failure.get('error', '')}",
                 f"step: {failure.get('step', '')}",
             ]
@@ -545,12 +672,19 @@ def run_fix_agent(
     )
     dirs_block = "\n".join(f"- {v}" for v in ctx["dirs"].values())
 
+    diagnostics = parse_diagnostics(blob)
+    diag_block = (
+        "\n".join(f"- {d.format()}" for d in diagnostics) if diagnostics else ""
+    )
+    hint = _language_hint(failure, diagnostics)
+
     messages = [
-        SystemMessage(content=FIX_SYSTEM),
+        SystemMessage(content=FIX_SYSTEM + (f"\n{hint}\n" if hint else "")),
         HumanMessage(
             content=(
                 f"Failed todo:\n{failed_todo}\n\n"
-                f"Failure report:\n{blob[:2500]}\n\n"
+                + (f"Diagnostics:\n{diag_block}\n\n" if diag_block else "")
+                + f"Failure report:\n{blob[:2500]}\n\n"
                 f"Workspace files: {file_names}\n\n"
                 f"Tracked execute processes:\n{procs[:500]}\n\n"
                 f"Directory listings:\n{dirs_block}\n\n"

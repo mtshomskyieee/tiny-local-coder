@@ -44,6 +44,7 @@ SKIP_ROOT_FILES = frozenset(
 # Prefer reviewable text; empty means accept any non-skipped file
 SOURCE_SUFFIXES = frozenset(
     {
+        # Python / docs / config / shell (existing)
         ".py",
         ".md",
         ".txt",
@@ -61,6 +62,70 @@ SOURCE_SUFFIXES = frozenset(
         ".ts",
         ".tsx",
         ".jsx",
+        # C / C++
+        ".c",
+        ".cc",
+        ".cpp",
+        ".cxx",
+        ".h",
+        ".hh",
+        ".hpp",
+        ".hxx",
+        # Go / Rust / Ruby
+        ".go",
+        ".rs",
+        ".rb",
+        ".rake",
+        ".gemspec",
+        # Java / JVM
+        ".java",
+        ".kt",
+        ".kts",
+        ".scala",
+        ".groovy",
+        # C# / .NET
+        ".cs",
+        ".fs",
+        ".vb",
+        # Swift / ObjC
+        ".swift",
+        ".m",
+        ".mm",
+        # Systems / scripting
+        ".zig",
+        ".nim",
+        ".lua",
+        ".pl",
+        ".pm",
+        ".r",
+        ".jl",
+        ".php",
+        # Web / data
+        ".vue",
+        ".svelte",
+        ".scss",
+        ".sass",
+        ".less",
+        ".sql",
+        ".graphql",
+        ".proto",
+        # Build
+        ".cmake",
+        ".gradle",
+        ".sbt",
+    }
+)
+# Extensionless (or multi-dot) build / package files reviewed by basename
+SOURCE_BASENAMES = frozenset(
+    {
+        "makefile",
+        "gnumakefile",
+        "cmakelists.txt",
+        "gemfile",
+        "rakefile",
+        "go.mod",
+        "go.sum",
+        "package.swift",
     }
 )
 
@@ -123,6 +188,9 @@ def _should_skip(rel: Path) -> bool:
 
 def _is_source_like(rel: Path) -> bool:
     if not SOURCE_SUFFIXES:
+        return True
+    name = rel.name.lower()
+    if name in SOURCE_BASENAMES:
         return True
     suffix = rel.suffix.lower()
     if suffix in SOURCE_SUFFIXES:

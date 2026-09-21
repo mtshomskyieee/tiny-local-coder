@@ -8,9 +8,12 @@ from __future__ import annotations
 
 from tinylocalcoder.agents.fixing import (
     apply_heuristic_fixes,
+    classify_failure,
     classify_plan_smell,
     extract_paths_from_error,
+    gather_fix_context,
     is_junk_run_failure,
+    missing_toolchain_binaries,
     parse_needs_replan,
 )
 from tinylocalcoder.agents.replan import try_deterministic_replan
@@ -234,3 +237,92 @@ def test_deterministic_replan_ignores_archived_files(memory: WorkspaceMemory) ->
         )
         is None
     )
+
+
+class TestBuildFailureRecovery:
+    """A failed `make` must reach the fix agent with the offending file in hand.
+
+    Previously `make` was not in the run-command allowlist, so it was
+    classified as a junk command and skipped outright; and even when a build
+    error did reach the fix agent, no path regex matched a `.cpp` or a
+    `Makefile`, so it was handed an error with nothing to look at.
+    """
+
+    def test_make_is_no_longer_a_junk_command(self) -> None:
+        assert not is_junk_run_failure({"command": "make"})
+        assert not is_junk_run_failure({"command": "g++ -o app main.cpp"})
+        assert not is_junk_run_failure({"command": "./square_root 9"})
+        # Real prose is still junk
+        assert is_junk_run_failure({"command": "Define the struct"})
+
+    def test_missing_build_tool_is_an_environment_failure(self) -> None:
+        failure = {
+            "command": "make",
+            "exit_code": 127,
+            "stderr": "/bin/sh: 1: make: not found\n",
+        }
+        assert classify_failure(failure) == "environment"
+        assert missing_toolchain_binaries(failure) == ["make"]
+
+    def test_missing_built_binary_is_not_an_environment_failure(self) -> None:
+        """`./square_root: not found` means the build failed, not that apt is needed."""
+        failure = {
+            "command": "./square_root",
+            "exit_code": 127,
+            "stderr": "/bin/sh: 1: ./square_root: not found\n",
+        }
+        assert missing_toolchain_binaries(failure) == []
+        assert classify_failure(failure) == "code"
+
+    def test_compile_error_is_a_code_failure(self) -> None:
+        failure = {
+            "command": "make",
+            "exit_code": 2,
+            "stderr": "src/square_root.cpp:12:5: error: 'sqrt' was not declared\n",
+        }
+        assert classify_failure(failure) == "code"
+
+    def test_gcc_diagnostic_yields_the_offending_source_file(self) -> None:
+        paths = extract_paths_from_error(
+            "src/square_root.cpp:12:5: error: 'sqrt' was not declared in this scope\n"
+            "make: *** [Makefile:7: square_root] Error 1\n"
+        )
+        assert "src/square_root.cpp" in paths
+
+    def test_make_diagnostic_yields_the_makefile(self) -> None:
+        paths = extract_paths_from_error("Makefile:4: *** missing separator.  Stop.\n")
+        assert "Makefile" in paths
+
+    def test_make_failure_pulls_in_the_sources_it_builds(
+        self, memory: WorkspaceMemory
+    ) -> None:
+        memory.write_prototype("Makefile", "all:\n\tg++ -o app a.cpp\n")
+        memory.write_prototype("a.cpp", "int main() { return 0; }\n")
+        ctx = gather_fix_context(memory, "Makefile:4: *** missing separator.  Stop.\n")
+        assert "Makefile" in ctx["files"]
+        assert "a.cpp" in ctx["files"]
+
+    def test_makefile_missing_separator_is_fixed_without_the_model(
+        self, memory: WorkspaceMemory
+    ) -> None:
+        memory.write_prototype(
+            "Makefile",
+            "CC = g++\n\napp: a.cpp\n    $(CC) -o app a.cpp\n\nclean:\n    rm -f app\n",
+        )
+        applied = apply_heuristic_fixes(
+            memory, "Makefile:4: *** missing separator.  Stop.\n"
+        )
+        assert any("TAB" in note for note in applied)
+        text = memory.read_prototype("Makefile")
+        assert "\tg++ -o app a.cpp" in text.replace("$(CC)", "g++")
+        assert "\trm -f app" in text
+        # Variable assignments and targets must not be indented
+        assert text.startswith("CC = g++")
+        assert "\napp: a.cpp\n" in text
+
+    def test_well_formed_makefile_is_left_alone(self, memory: WorkspaceMemory) -> None:
+        original = "app: a.cpp\n\tg++ -o app a.cpp\n"
+        memory.write_prototype("Makefile", original)
+        applied = apply_heuristic_fixes(memory, "Makefile:1: *** missing separator.\n")
+        assert not any("TAB" in note for note in applied)
+        assert memory.read_prototype("Makefile") == original

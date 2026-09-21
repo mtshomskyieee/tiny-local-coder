@@ -12,8 +12,10 @@ from tinylocalcoder.agents.coding import pending_file_paths, run_coding_agent, r
 from tinylocalcoder.agents.critic import run_critic
 from tinylocalcoder.agents.execution import run_execution_step
 from tinylocalcoder.agents.fixing import (
+    classify_failure,
     classify_plan_smell,
     is_junk_run_failure,
+    missing_toolchain_binaries,
     run_fix_agent,
 )
 from tinylocalcoder.agents.replan import run_replan_agent
@@ -23,6 +25,7 @@ from tinylocalcoder.exec.gate import ApprovalGate
 from tinylocalcoder.exec.runner import CommandRunner
 from tinylocalcoder.graph.state import AgentState
 from tinylocalcoder.memory.files import TodoStep, WorkspaceMemory
+from tinylocalcoder.tools.provision import provision, toolchains_for_missing_binaries
 
 ProgressCallback = Callable[[str], None]
 
@@ -187,6 +190,86 @@ class Pipeline:
         self._notify_todo_board()
         return step
 
+    def _provision_and_retry(
+        self, state: AgentState, failure: dict
+    ) -> dict[str, Any] | None:
+        """Install a missing toolchain and re-run the failed step.
+
+        Returns None when provisioning is off or the binary belongs to no
+        registered toolchain, so the caller falls through to the normal ladder.
+        """
+        if not self.settings.auto_install:
+            return None
+        binaries = missing_toolchain_binaries(failure)
+        toolchains = toolchains_for_missing_binaries(binaries)
+        if not toolchains:
+            return None
+
+        names = ", ".join(tc.name for tc in toolchains)
+        self._notify(f"thinking … installing missing {names} toolchain")
+        ok, note = provision(self.memory, self.runner, toolchains)
+        attempts = int(state.get("fix_attempts") or 0) + 1
+        result: dict[str, Any] = {
+            "phase": "executing",
+            "fix_attempts": attempts,
+            "replan_attempts": int(state.get("replan_attempts") or 0),
+            "fixes": [note] if ok else [],
+            "plan_smell": False,
+            "junk_command": False,
+        }
+
+        if not ok:
+            self.memory.append_exec_log(f"\n## PROVISION (failed)\n{note}\n")
+            skipped = self._auto_skip_failed_step(
+                state, reason=f"missing toolchain ({note})"
+            )
+            result["output"] = (
+                f"Environment error — {note}.\n"
+                + (
+                    f"Auto-skip: step {skipped} marked [!]."
+                    if skipped
+                    else "Install it in the container and re-run /execute-plan."
+                )
+            )
+            result["status"] = "skipped" if skipped else "failed"
+            result["progress"] = self.memory.progress_summary()
+            return result
+
+        self.memory.append_exec_log(f"\n## PROVISION\n{note}\n")
+        step = failure.get("step")
+        if step:
+            self.memory.clear_todo_skip(int(step))
+        self.memory.clear_last_failure()
+
+        todo = self.memory.next_todo()
+        if todo is None or todo.action not in {"run", "test"}:
+            result["output"] = note
+            result["status"] = "ok"
+            result["progress"] = self.memory.progress_summary()
+            return result
+
+        self._notify(self._todo_status(todo, verb="retry"))
+        self._trace_todo(todo, verb="retry")
+        retry = run_execution_step(
+            self.memory, self.runner, todo, state.get("prompt") or ""
+        )
+        self._trace_todo(todo, status=str(retry.get("status") or "ok"))
+        self._notify_todo_board()
+        result["output"] = f"{note}\n\n— retry after install —\n{retry.get('output', '')}"
+        result["status"] = retry.get("status") or "ok"
+        result["last_command"] = retry.get("last_command") or ""
+        result["ran_shell"] = True
+        result["progress"] = self.memory.progress_summary()
+
+        if result["status"] == "failed" and self.settings.auto_skip:
+            skipped = self._auto_skip_failed_step(state)
+            if skipped is not None:
+                result["output"] += (
+                    f"\nAuto-skip: step {skipped} marked [!] skipped; continuing plan."
+                )
+                result["status"] = "skipped"
+        return result
+
     def _route_prep(self, state: AgentState) -> dict[str, Any]:
         progress = self.memory.progress_summary()
         pending = self.memory.pending_todos()
@@ -250,8 +333,19 @@ class Pipeline:
         else:
             self._notify("thinking … diagnosing last failure")
 
+        kind = classify_failure(failure)
+
+        # A missing build tool is an environment problem, not a code bug: the
+        # model has nothing to patch, so installing it and retrying is the only
+        # move that can succeed. Without this `make: not found` was diagnosed
+        # as a code failure and the step was skipped.
+        if kind == "environment":
+            handled = self._provision_and_retry(state, failure)
+            if handled is not None:
+                return handled
+
         # Junk run commands: skip immediately — do not LLM-fix or burn replan
-        if is_junk_run_failure(failure):
+        if kind == "junk":
             skipped = self._auto_skip_failed_step(
                 state, reason="junk run command (not a valid verify)"
             )
@@ -265,7 +359,9 @@ class Pipeline:
                 "status": "skipped" if skipped else "failed",
                 "phase": "executing",
                 "progress": self.memory.progress_summary(),
-                "fix_attempts": int(state.get("fix_attempts") or 0),
+                # Consume the budget: without this, repeated junk todos cycle
+                # through the fix node bounded only by the recursion limit.
+                "fix_attempts": int(state.get("fix_attempts") or 0) + 1,
                 "replan_attempts": int(state.get("replan_attempts") or 0),
                 "fixes": [],
                 "plan_smell": False,
