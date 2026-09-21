@@ -602,11 +602,26 @@ class WorkspaceMemory:
     def prototype_exists(self, rel_path: str) -> bool:
         return self.resolve_path(rel_path).exists()
 
-    def list_files(self) -> list[str]:
+    def list_files(self, include_archive: bool = False) -> list[str]:
+        """Workspace-relative files, excluding archive/ and .index/.
+
+        Archived sessions are not the working tree. Every caller that feeds
+        this list to a tool or an LLM wants live files only, and when the
+        exclusion was each caller's job most of them remembered and some did
+        not — /test walked the whole archive looking for test files. Exclude
+        by default; `include_archive=True` is there for anything that really
+        wants the history.
+        """
         files: list[str] = []
         for path in sorted(self.root.rglob("*")):
-            if path.is_file() and ".index" not in path.parts:
-                files.append(str(path.relative_to(self.root)))
+            if not path.is_file():
+                continue
+            parts = path.relative_to(self.root).parts
+            if ".index" in parts:
+                continue
+            if not include_archive and parts and parts[0] == "archive":
+                continue
+            files.append(str(path.relative_to(self.root)))
         return files
 
     def read_workspace_file(self, rel_path: str) -> str:
@@ -879,7 +894,7 @@ class WorkspaceMemory:
         return ", ".join(parts)
 
     def find_module_py(self, module_name: str) -> str | None:
-        """Locate module_name.py under the workspace (skip archive/.index)."""
+        """Locate module_name.py under the workspace (list_files skips archive)."""
         name = (module_name or "").split(".", 1)[0].strip()
         if not name or not name.isidentifier():
             return None
@@ -889,8 +904,6 @@ class WorkspaceMemory:
         hits: list[str] = []
         for rel in self.list_files():
             rel_n = rel.replace("\\", "/")
-            if rel_n.startswith("archive/") or "/.index/" in f"/{rel_n}/":
-                continue
             if rel_n == direct or rel_n.endswith(f"/{name}.py"):
                 hits.append(rel_n)
         if not hits:

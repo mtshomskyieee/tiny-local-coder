@@ -99,14 +99,11 @@ def _verify_todo_for_module(
 
 
 def _workspace_sources(memory: WorkspaceMemory) -> list[str]:
-    """Candidate source files, shallowest first, skipping archives and indexes."""
+    """Candidate source files, shallowest first (list_files skips archive/.index)."""
     files = [
         f
         for f in memory.list_files()
-        if not f.startswith("archive/")
-        and "/.index/" not in f"/{f}/"
-        and not f.endswith("__init__.py")
-        and toolchain_for_path(f) is not None
+        if not f.endswith("__init__.py") and toolchain_for_path(f) is not None
     ]
     files.sort(key=lambda p: (p.count("/"), len(p)))
     return files
@@ -221,10 +218,7 @@ def try_deterministic_replan(
     py_files = [
         f
         for f in memory.list_files()
-        if f.endswith(".py")
-        and not f.startswith("archive/")
-        and "/.index/" not in f"/{f}/"
-        and not f.endswith("__init__.py")
+        if f.endswith(".py") and not f.endswith("__init__.py")
     ]
     if py_files and ("ModuleNotFoundError" in err or "ImportError" in err):
         py_files.sort(key=lambda p: (p.count("/"), len(p)))
@@ -313,11 +307,7 @@ def _llm_open_todos(
                 or f"{t.number}. [ ] {t.action} `{t.target}` — {t.description}"
             )
             break
-    files = ", ".join(
-        f
-        for f in memory.list_files()[:40]
-        if not f.startswith("archive/") and ".index" not in f
-    ) or "(none)"
+    files = ", ".join(memory.list_files()[:40]) or "(none)"
 
     messages = [
         SystemMessage(content=REPLAN_SYSTEM),
