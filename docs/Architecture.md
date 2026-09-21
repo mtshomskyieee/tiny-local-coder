@@ -159,6 +159,7 @@ Manual `/fix` does not auto-replan; it may hint to re-run execute with auto-repl
 - Fix prompt includes **one** failed todo line, a compact `file:line — message` diagnostics block, a one-line language hint, the workspace file name list and small snippets
 - Build diagnostics (gcc/clang, make, ld, rustc, go, …) are parsed by the registry, so a `.cpp` or `Makefile` failure names a file the fix agent can actually open. `stderr` precedes `stdout` in the failure blob because only its first 2500 chars reach the prompt
 - `NEEDS_REPLAN` → no file writes; graph takes the replan path
+- A synthesized `./binary` verify carries no arguments — nothing deterministic knows what the program expects. When one fails with no compiler diagnostics it is treated as **plan smell**, so replan rewrites the run line rather than skipping a build that actually succeeded
 
 ## Configuration
 

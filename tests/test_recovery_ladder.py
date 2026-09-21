@@ -340,3 +340,41 @@ class TestBuildFailureRecovery:
         applied = apply_heuristic_fixes(memory, "Makefile:1: *** missing separator.\n")
         assert not any("TAB" in note for note in applied)
         assert memory.read_prototype("Makefile") == original
+
+
+class TestSynthesizedSmokeRun:
+    """`augment_plan_todos` can only synthesize `./binary` with no arguments.
+
+    Nothing deterministic knows what the program expects, so when that run
+    fails with no compiler diagnostics the todo is wrong, not the code —
+    replan can rewrite it. Skipping instead leaves a successful build [!].
+    """
+
+    def test_bare_binary_failure_is_a_plan_smell(
+        self, memory: WorkspaceMemory
+    ) -> None:
+        failure = _failure("./square_root", stderr="")
+        failure["exit_code"] = 1
+        assert classify_plan_smell(memory, failure=failure, fixes=[])
+
+    def test_a_run_with_arguments_is_not(self, memory: WorkspaceMemory) -> None:
+        """The model supplied the arguments, so the todo is not the suspect."""
+        failure = _failure("./square_root 9", stderr="")
+        assert not classify_plan_smell(memory, failure=failure, fixes=[])
+
+    def test_a_compiler_diagnostic_is_a_code_problem_not_a_plan_one(
+        self, memory: WorkspaceMemory
+    ) -> None:
+        failure = _failure(
+            "./square_root", stderr="square_root.cpp:3:1: error: boom\n"
+        )
+        assert not classify_plan_smell(memory, failure=failure, fixes=[])
+
+    def test_an_applied_fix_means_the_code_was_the_suspect(
+        self, memory: WorkspaceMemory
+    ) -> None:
+        """The fix agent patched the file the failure named — retry it, don't replan."""
+        failure = _failure("./square_root", stderr="square_root.cpp: bad output\n")
+        assert not classify_plan_smell(
+            memory, failure=failure, fixes=["WRITE `square_root.cpp`"]
+        )

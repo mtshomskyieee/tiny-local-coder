@@ -505,6 +505,14 @@ def classify_plan_smell(
     if cmd and not is_valid_run_command(cmd):
         return False
 
+    # A synthesized `./binary` verify carries no arguments, because nothing
+    # deterministic can know what the program expects. When such a run fails
+    # with no compiler diagnostics, the todo is wrong, not the code — replan
+    # can rewrite it with arguments and an expect clause. Skipping instead
+    # leaves a finished build marked [!].
+    if _is_bare_binary_run(cmd) and not parse_diagnostics(err) and not fixes:
+        return True
+
     attr_m = _ATTR_RE.search(err)
     if attr_m:
         attr = next((g for g in attr_m.groups() if g), "")
@@ -555,6 +563,12 @@ def classify_plan_smell(
         return True
 
     return False
+
+
+def _is_bare_binary_run(command: str) -> bool:
+    """`./square_root` with no arguments — a synthesized smoke run."""
+    parts = (command or "").strip().split()
+    return len(parts) == 1 and parts[0].startswith("./")
 
 
 def is_junk_run_failure(failure: dict | None, error_blob: str = "") -> bool:
