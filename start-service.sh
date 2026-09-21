@@ -103,6 +103,10 @@ echo "Model: $TLC_MODEL_KEY → $MODEL_NAME (num_ctx=$NUM_CTX)"
 # shellcheck source=scripts/ensure-ollama-model.sh
 source "$ROOT/scripts/ensure-ollama-model.sh"
 
+# shellcheck source=scripts/check-memory-cgroup.sh
+source "$ROOT/scripts/check-memory-cgroup.sh"
+tlc_warn_memory_cgroup
+
 # Ensure the named Ollama model volume exists (preserves pulls across restarts).
 VOLUME_NAME="crew_pipeline_ollama_data"
 if ! docker volume inspect "$VOLUME_NAME" >/dev/null 2>&1; then
