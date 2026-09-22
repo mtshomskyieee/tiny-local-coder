@@ -205,3 +205,32 @@ If tests were skipped (`[!]`):
 /reset-all-skipped
 /execute-plan
 ```
+
+---
+
+## 6. Soup-to-nuts (unattended full run)
+
+**Goal:** From a product requirement, run plan → execute → review → review-fix → test in one command, with a single allow-all consent up front.
+
+**CLI**
+
+```text
+/soup-to-nuts create and run hello_world.py that prints Hello and exits
+```
+
+**API**
+
+`POST /v1/soup-to-nuts` with `{"prompt": "…"}`. The first response is `pending_approval` for the soup-to-nuts consent — approve with `allow_all` (or `allow`; both unlock the rest of the run). Then poll `/v1/status` or follow further approvals if consent was denied somehow mid-run (normal path needs none after consent).
+
+**What happens**
+
+The TUI prints `soup-to-nuts » …` stages:
+
+1. **Consent** — one gate prompt; Allow or Allow all both set allow-all for this run. Deny aborts with nothing planned.
+2. **1/5** — `/plan` from your requirement (overwrites `plan.md`; no need to `/plan` first).
+3. **2/5** — `/execute-plan` (auto-fix / auto-replan / auto-skip as configured).
+4. **3/5** — `/review` (manifest + `review.md`).
+5. **4/5** — `/review-fix` (skipped execute if no actionable findings).
+6. **5/5** — `/test` (plan and run tests).
+
+Do **not** pre-create a plan; soup-to-nuts owns the first `/plan` step.

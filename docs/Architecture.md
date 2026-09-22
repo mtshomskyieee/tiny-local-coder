@@ -68,10 +68,11 @@ flowchart LR
 | `/review-fix` | Parse `review.md` findings, `/plan` refine/fix todos (skip execute if none) | `/execute-plan` |
 | `/fix-plan` | Compare requirement vs `plan.md` + workspace gaps, rewrite todos | *(stop — user runs `/execute-plan`)* |
 | `/test` | Invent a **runnable test plan** as `plan.md` (find/run tests, or add a tiny smoke test) | `/execute-plan` |
+| `/soup-to-nuts` | One allow-all consent, then `/plan` → `/execute-plan` → `/review` → `/review-fix` → `/test` | *(compound of existing workflows)* |
 
-Optional trailing text is appended to the fixed prompt (`/review focus on src/`, `/review-fix only high`, `/fix-plan start_service.sh`, `/test only unit`).
+Optional trailing text is appended to the fixed prompt (`/review focus on src/`, `/review-fix only high`, `/fix-plan start_service.sh`, `/test only unit`). `/soup-to-nuts <requirement>` uses the trailing text as the product `/plan` prompt; nested review/test stages get no extra note.
 
-API mirrors: `POST /v1/review`, `POST /v1/review-fix`, `POST /v1/fix-plan`, `POST /v1/test`.
+API mirrors: `POST /v1/review`, `POST /v1/review-fix`, `POST /v1/fix-plan`, `POST /v1/test`, `POST /v1/soup-to-nuts`.
 
 ### Recovery and plan hygiene (during execute)
 
@@ -90,7 +91,7 @@ TUI toggles: `/auto-fix`, `/auto-skip`, `/auto-replan`.
 | Path | Role |
 |------|------|
 | `agents/thinking.py` | Plan agent (`PLAN_SYSTEM`) |
-| `agents/workflows.py` | `/review` + `/review-fix` + `/fix-plan` + `/test` prompts; `run_workflow` |
+| `agents/workflows.py` | `/review` + `/review-fix` + `/fix-plan` + `/test` + `/soup-to-nuts`; `run_workflow` |
 | `tools/manifest.py` | Deterministic `manifest.txt` inventory for `/review` (skips archive/.index/meta) |
 | `tools/review.py` | Deterministic `review.md` + parse findings for `/review-fix` |
 | `memory/files.py` | Todo parse, `finalize_plan`, meta strip, validate/augment |

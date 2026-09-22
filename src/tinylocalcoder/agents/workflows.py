@@ -6,6 +6,7 @@ import re
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal
 
+from tinylocalcoder.exec.gate import Decision
 from tinylocalcoder.memory.files import TodoStep, WorkspaceMemory
 from tinylocalcoder.toolchains import toolchain_for_path
 from tinylocalcoder.tools.manifest import (
@@ -27,7 +28,13 @@ from tinylocalcoder.tools.review import (
 if TYPE_CHECKING:
     from tinylocalcoder.graph.builder import Pipeline
 
-WorkflowKind = Literal["review", "test", "review-fix", "fix-plan"]
+WorkflowKind = Literal["review", "test", "review-fix", "fix-plan", "soup-to-nuts"]
+
+SOUP_CONSENT_COMMAND = "soup-to-nuts: allow all shell commands for this run"
+SOUP_CONSENT_REASON = (
+    "Unattended soup-to-nuts run: plan → execute → review → review-fix → test. "
+    "Approve to allow all shell commands for the rest of this workflow."
+)
 
 REVIEW_PROMPT = """Write a SHORT numbered todo plan for a code review of this workspace.
 
@@ -474,16 +481,118 @@ def _run_review_fix(
     return merged
 
 
+def _run_soup_to_nuts(
+    pipeline: Pipeline,
+    extra: str,
+    **invoke_extra: Any,
+) -> dict[str, Any]:
+    """plan → execute → review → review-fix → test, after one allow-all consent."""
+    log_lines: list[str] = []
+    cwd = str(pipeline.memory.root)
+
+    _trace(pipeline, log_lines, "soup-to-nuts » consent: allow-all for this run")
+    decision = pipeline.gate.request(
+        SOUP_CONSENT_COMMAND, cwd, reason=SOUP_CONSENT_REASON
+    )
+    if decision == Decision.DENY:
+        _trace(pipeline, log_lines, "soup-to-nuts » consent denied — aborting")
+        return {
+            "workflow": "soup-to-nuts",
+            "status": "denied",
+            "output": "Soup-to-nuts aborted: shell consent denied.",
+            "log_lines": log_lines,
+            "progress": pipeline.memory.progress_summary(),
+        }
+    # ALLOW or ALLOW_ALL both unlock the full unattended run.
+    pipeline.gate.allow_all = True
+    _trace(pipeline, log_lines, "soup-to-nuts » consent granted (allow-all)")
+
+    _trace(pipeline, log_lines, "soup-to-nuts » 1/5 planning")
+    plan_result = pipeline.invoke("plan", extra, **invoke_extra)
+    plan_out = str(plan_result.get("output") or "").strip()
+    todos = pipeline.memory.parse_todos()
+    _trace(pipeline, log_lines, f"soup-to-nuts » plan.md ready ({len(todos)} step(s))")
+    for todo in todos:
+        _trace(pipeline, log_lines, f"soup-to-nuts »   • {_todo_bullet(todo)}")
+
+    _trace(pipeline, log_lines, "soup-to-nuts » 2/5 executing plan")
+    exec_result = pipeline.invoke("execute", "", **invoke_extra)
+
+    _trace(pipeline, log_lines, "soup-to-nuts » 3/5 review")
+    review_result = run_workflow(pipeline, "review", "", **invoke_extra)
+    log_lines.extend(review_result.get("log_lines") or [])
+
+    _trace(pipeline, log_lines, "soup-to-nuts » 4/5 review-fix")
+    review_fix_result = run_workflow(pipeline, "review-fix", "", **invoke_extra)
+    log_lines.extend(review_fix_result.get("log_lines") or [])
+    if review_fix_result.get("skipped_execute"):
+        _trace(
+            pipeline,
+            log_lines,
+            "soup-to-nuts » review-fix skipped execute (no findings)",
+        )
+
+    _trace(pipeline, log_lines, "soup-to-nuts » 5/5 test")
+    test_result = run_workflow(pipeline, "test", "", **invoke_extra)
+    log_lines.extend(test_result.get("log_lines") or [])
+
+    bits = [
+        b
+        for b in (
+            plan_out,
+            str(exec_result.get("output") or "").strip(),
+            str(review_result.get("output") or "").strip(),
+            str(review_fix_result.get("output") or "").strip(),
+            str(test_result.get("output") or "").strip(),
+        )
+        if b
+    ]
+    progress = pipeline.memory.progress_summary()
+    _trace(
+        pipeline,
+        log_lines,
+        "soup-to-nuts » finished "
+        f"({progress.get('todos_done', 0)} done, "
+        f"{progress.get('todos_skipped', 0)} skipped, "
+        f"{progress.get('todos_total', 0)} total in last plan)",
+    )
+
+    merged: dict[str, Any] = dict(test_result)
+    merged["workflow"] = "soup-to-nuts"
+    merged["status"] = str(test_result.get("status") or "ok")
+    merged["log_lines"] = log_lines
+    merged["plan_output"] = plan_out
+    merged["plan_text"] = pipeline.memory.read_plan().strip()
+    merged["review_markdown"] = str(review_result.get("review_markdown") or "")
+    merged["manifest_text"] = str(review_result.get("manifest_text") or "")
+    merged["issue_count"] = int(review_fix_result.get("issue_count") or 0)
+    merged["test_files"] = list(test_result.get("test_files") or [])
+    merged["progress"] = progress
+    merged["output"] = (
+        "\n\n".join(bits) if bits else "Soup-to-nuts: plan → execute → review → review-fix → test."
+    )
+    if not merged.get("last_file"):
+        merged["last_file"] = (
+            test_result.get("last_file")
+            or review_result.get("last_file")
+            or plan_result.get("last_file")
+            or "plan.md"
+        )
+    return merged
+
+
 def run_workflow(
     pipeline: Pipeline,
     kind: WorkflowKind,
     extra: str = "",
     **invoke_extra: Any,
 ) -> dict[str, Any]:
-    """Review / review-fix / test: tool prep, plan, then execute."""
-    if kind not in {"review", "test", "review-fix", "fix-plan"}:
+    """Review / review-fix / test / soup-to-nuts: tool prep, plan, then execute."""
+    if kind not in {"review", "test", "review-fix", "fix-plan", "soup-to-nuts"}:
         raise ValueError(f"unknown workflow: {kind}")
 
+    if kind == "soup-to-nuts":
+        return _run_soup_to_nuts(pipeline, extra, **invoke_extra)
     if kind == "review-fix":
         return _run_review_fix(pipeline, extra, **invoke_extra)
     if kind == "fix-plan":

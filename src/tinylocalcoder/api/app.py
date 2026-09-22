@@ -203,6 +203,10 @@ def create_app(session: ApiSession | None = None) -> FastAPI:
     def test_workflow(body: PromptRequest) -> RunResponse:
         return _run_mode("test", body, workflow="test")
 
+    @app.post("/v1/soup-to-nuts", response_model=RunResponse)
+    def soup_to_nuts(body: PromptRequest) -> RunResponse:
+        return _run_mode("soup-to-nuts", body, workflow="soup-to-nuts")
+
     @app.get("/v1/status", response_model=RunResponse)
     def status() -> RunResponse:
         return state.snapshot(state._last_mode)

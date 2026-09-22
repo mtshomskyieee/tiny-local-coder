@@ -23,7 +23,7 @@ Rules:
 - Prefer ≤8 todos. Each todo is ONE tiny action: create | refine | run.
 - Creates first, then ONE build/compile check, then ONE short behavioral run.
 - Do NOT stack many assert/run steps. One short check is enough.
-- Never put meta commands in todos (reset-todo, skip-todo, auto-fix, clear-plan, review, review-fix, fix-plan, test, …).
+- Never put meta commands in todos (reset-todo, skip-todo, auto-fix, clear-plan, review, review-fix, fix-plan, test, soup-to-nuts, …).
 - Paths/commands are workspace-relative. NEVER leading `/`.
 - NEVER use placeholder paths like `path/to/file.py` — use real names (`db.py`, `src/api.py`).
 - Run steps MUST exit quickly. Bad: uvicorn/servers, interactive commands.
