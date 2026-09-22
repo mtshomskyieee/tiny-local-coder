@@ -6,6 +6,7 @@ from pathlib import Path
 
 from tinylocalcoder.agents.workflows import plan_requirement_gaps, run_workflow
 from tinylocalcoder.config import Settings
+from tinylocalcoder.exec.gate import Decision
 from tinylocalcoder.memory.files import WorkspaceMemory
 from tinylocalcoder.tools.review import REVIEW_NAME
 
@@ -360,3 +361,75 @@ def test_fix_plan_rewrites_plan_and_does_not_execute(tmp_path: Path) -> None:
 
 def seen_or_prompt(pipe: _FakePipeline, result: dict) -> str:
     return " ".join(result.get("log_lines") or []) + " " + str(result.get("requirement") or "")
+
+
+class _SoupGate:
+    def __init__(self, decision: Decision) -> None:
+        self.decision = decision
+        self.allow_all = False
+        self.requests: list[tuple[str, str, str]] = []
+
+    def request(self, command: str, cwd: str, reason: str = "") -> Decision:
+        self.requests.append((command, cwd, reason))
+        if self.decision == Decision.ALLOW_ALL:
+            self.allow_all = True
+        return self.decision
+
+
+class _SoupPipeline(_FakePipeline):
+    def __init__(
+        self,
+        memory: WorkspaceMemory,
+        plan_text: str,
+        *,
+        decision: Decision = Decision.ALLOW_ALL,
+    ) -> None:
+        super().__init__(memory, plan_text)
+        self.gate = _SoupGate(decision)
+
+
+def test_soup_to_nuts_ordered_stages_and_sets_allow_all(tmp_path: Path) -> None:
+    mem = _memory(tmp_path)
+    (tmp_path / "app.py").write_text("print('hi')\n", encoding="utf-8")
+    plan = (
+        "# Plan\n"
+        "Goal: hello\n"
+        "\n"
+        "## Todos\n"
+        "1. [ ] create `app.py` — hello\n"
+        "2. [ ] run `python3 app.py` — expect Hello\n"
+    )
+    pipe = _SoupPipeline(mem, plan, decision=Decision.ALLOW)
+    result = run_workflow(pipe, "soup-to-nuts", extra="create hello app")  # type: ignore[arg-type]
+
+    assert pipe.gate.requests, "consent must be requested first"
+    assert "soup-to-nuts: allow all" in pipe.gate.requests[0][0]
+    assert pipe.gate.allow_all is True
+    # Product plan+execute first; nested review / review-fix / test add more invokes.
+    assert pipe.modes[0] == "plan"
+    assert pipe.modes[1] == "execute"
+    assert pipe.modes.count("plan") >= 3  # product + review + test (and maybe review-fix)
+    assert pipe.modes.count("execute") >= 2
+    assert result["workflow"] == "soup-to-nuts"
+    assert result["status"] != "denied"
+    steps = result["log_lines"]
+    assert any("consent granted" in line for line in steps)
+    assert any("1/5 planning" in line for line in steps)
+    assert any("2/5 executing" in line for line in steps)
+    assert any("3/5 review" in line for line in steps)
+    assert any("4/5 review-fix" in line for line in steps)
+    assert any("5/5 test" in line for line in steps)
+    assert any("finished" in line for line in steps)
+    assert any("review »" in line for line in steps)
+    assert any("test »" in line for line in steps)
+
+
+def test_soup_to_nuts_deny_consent_aborts(tmp_path: Path) -> None:
+    mem = _memory(tmp_path)
+    pipe = _SoupPipeline(mem, "Goal: x\n1. [ ] create `x.py`\n", decision=Decision.DENY)
+    result = run_workflow(pipe, "soup-to-nuts", extra="should not run")  # type: ignore[arg-type]
+    assert result["status"] == "denied"
+    assert result["workflow"] == "soup-to-nuts"
+    assert pipe.modes == []
+    assert pipe.gate.allow_all is False
+    assert any("consent denied" in line for line in result["log_lines"])
