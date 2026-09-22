@@ -88,6 +88,7 @@ META_TODO_NAMES = frozenset(
         "review-fix",
         "fix-plan",
         "test",
+        "soup-to-nuts",
         "procs",
         "processes",
         "kill-procs",

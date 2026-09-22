@@ -30,7 +30,9 @@ _MODE_ALIASES = {
     "run-plan": "execute",
 }
 
-_WORKFLOW_COMMANDS = frozenset({"review", "test", "review-fix", "fix-plan"})
+_WORKFLOW_COMMANDS = frozenset(
+    {"review", "test", "review-fix", "fix-plan", "soup-to-nuts"}
+)
 
 _META_COMMANDS = set(META_TODO_NAMES) | {
     "help",
@@ -65,6 +67,7 @@ _META_COMMANDS = set(META_TODO_NAMES) | {
     "review-fix",
     "fix-plan",
     "test",
+    "soup-to-nuts",
     "procs",
     "processes",
     "kill-procs",
@@ -77,7 +80,19 @@ _META_COMMANDS = set(META_TODO_NAMES) | {
 # Mode words that are also meta when used as /commands, but must NOT steal
 # freeform plan prompts like "plan a flask app" when typed without /.
 _META_ONLY_WITH_SLASH = frozenset(
-    {"plan", "code", "ask", "execute", "fix", "reset", "review", "review-fix", "fix-plan", "test"}
+    {
+        "plan",
+        "code",
+        "ask",
+        "execute",
+        "fix",
+        "reset",
+        "review",
+        "review-fix",
+        "fix-plan",
+        "test",
+        "soup-to-nuts",
+    }
 )
 
 
@@ -135,6 +150,8 @@ def _thinking_for_mode(mode: str, prompt: str, memory) -> str:
         return "thinking … fix-plan: 1/3 reading requirement and plan.md"
     if mode == "test":
         return "thinking … test: 1/3 looking for existing tests"
+    if mode == "soup-to-nuts":
+        return "thinking … soup-to-nuts: consent (allow-all)"
     if mode in _WORKFLOW_COMMANDS:
         return f"thinking … {mode}: planning"
     if mode == "plan":
@@ -218,6 +235,7 @@ _HELP = """[b]Commands[/b]
   [blue]/review-fix[/]  — plan fixes from review.md, then execute that plan
   [blue]/fix-plan[/]    — compare requirement vs plan.md and rewrite the todos
   [blue]/test[/]        — find tests, show the plan, run each step (live in the log)
+  [blue]/soup-to-nuts[/] — plan → execute → review → review-fix → test (one allow-all consent)
   [red]/fix[/]         — last failure or a file hint (e.g. /fix start_service.sh)
   [b]/procs[/]         — list PIDs tracked from /execute (ports, status)
   [b]/kill-procs[/]    — kill all tracked execute processes
@@ -326,6 +344,7 @@ class TinyLocalCoderTui(App[None]):
             or message.startswith("review-fix »")
             or message.startswith("test »")
             or message.startswith("fix-plan »")
+            or message.startswith("soup-to-nuts »")
         ):
             self.call_from_thread(self._append_log, f"[blue]{message}[/]")
         if message.startswith("review » manifest.txt ready"):
@@ -339,6 +358,8 @@ class TinyLocalCoderTui(App[None]):
         if message.startswith("test » plan.md ready"):
             self.call_from_thread(self._show_current_plan)
         if message.startswith("fix-plan » plan.md ready"):
+            self.call_from_thread(self._show_current_plan)
+        if message.startswith("soup-to-nuts » plan.md ready"):
             self.call_from_thread(self._show_current_plan)
         if message.startswith("todos »"):
             self.call_from_thread(self._show_todo_board)
@@ -379,7 +400,7 @@ class TinyLocalCoderTui(App[None]):
         log.write(
             "Modes: [cyan]/plan[/] [green]/code[/] "
             "[yellow]/execute-plan[/] [red]/fix[/] [magenta]/ask[/]  ·  "
-            "flows: [blue]/review /review-fix /fix-plan /test[/]  ·  "
+            "flows: [blue]/review /review-fix /fix-plan /test /soup-to-nuts[/]  ·  "
             "plan: [b]/show-plan /plan-edit /clear-plan /archive /clear-workspace[/b]  ·  "
             "meta: [b]/auto-fix /auto-skip /skip-todo /reset-todo "
             "/reset-all-skipped /clear /model /usage /help /quit[/b]"
@@ -537,6 +558,10 @@ class TinyLocalCoderTui(App[None]):
                 "review-fix": "plan fixes from review.md, then execute",
                 "fix-plan": "compare requirement vs plan.md and rewrite todos",
                 "test": "find tests, plan how to run them, then execute each step",
+                "soup-to-nuts": (
+                    "plan → execute → review → review-fix → test "
+                    "(one allow-all consent up front)"
+                ),
             }[cmd]
             log.write(f"[blue]/{cmd}[/] — {label}")
             self._start_workflow(cmd, rest)
@@ -906,6 +931,12 @@ class TinyLocalCoderTui(App[None]):
                 f"\n[b]→ /test[/b] {prompt or ''}".rstrip()
                 + "\n[dim]workflow: find tests → plan run steps → execute each[/]"
             )
+        elif kind == "soup-to-nuts":
+            log.write(
+                f"\n[b]→ /soup-to-nuts[/b] {prompt or ''}".rstrip()
+                + "\n[dim]workflow: consent → plan → execute → review → "
+                "review-fix → test[/]"
+            )
         else:
             log.write(
                 f"\n[b]→ /{kind}[/b] {prompt or '(plan → execute workflow)'}"
@@ -1107,6 +1138,28 @@ class TinyLocalCoderTui(App[None]):
                 log.write("[green]saved:[/green] plan.md")
                 self._refresh_status()
                 log.write("[b green]/test complete.[/]")
+                return
+
+            if (workflow or result.get("workflow")) == "soup-to-nuts":
+                if result.get("status") == "denied":
+                    log.write("[b red]/soup-to-nuts[/] — consent denied; nothing ran.")
+                    self._refresh_status()
+                    return
+                log.write(
+                    "[b]/soup-to-nuts[/] — plan → execute → review → "
+                    "review-fix → test"
+                )
+                review_body = str(result.get("review_markdown") or "").strip()
+                if review_body:
+                    self._show_review_md(review_body)
+                found = result.get("test_files") or []
+                if found:
+                    log.write("[b cyan]test files[/]")
+                    for path in found:
+                        log.write(f"  {path}")
+                self._show_current_plan()
+                self._refresh_status()
+                log.write("[b green]/soup-to-nuts complete.[/]")
                 return
 
             if len(out) > 4000:
