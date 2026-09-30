@@ -684,18 +684,22 @@ class TinyLocalCoderTui(App[None]):
             return True
         if cmd == "model":
             choice = load_model_choice()
-            log.write(
-                f"[b]Current model:[/b] {choice.key} → {self.settings.model_name}"
-            )
+            shown = self.settings.model_name or choice.url
+            log.write(f"[b]Current model:[/b] {choice.key} → {shown}")
             log.write("Edit [cyan]config.toml[/] then restart the suite:")
-            log.write('  [cyan]model = "qwen3.5"[/]   # or "qwen2.5"')
+            log.write('  [cyan]model = "qwen3.5"[/]   # or "qwen2.5" or "lmstudio"')
             log.write("  then [cyan]./start-service.sh[/]")
             log.write("[b]Catalog:[/b]")
             for spec in iter_models():
                 mark = " [green](active)[/]" if spec.key == choice.key else ""
-                log.write(f"  {spec.key}: {spec.ollama}{mark}")
-                log.write(f"    {spec.url}")
-            log.write(f"  Ollama base URL: {self.settings.ollama_base_url}")
+                label = spec.ollama or spec.url
+                log.write(f"  {spec.key}: {label}{mark}")
+                if spec.url and spec.url != label:
+                    log.write(f"    {spec.url}")
+            if choice.provider == "openai":
+                log.write(f"  LM Studio: {self.settings.llm_base_url}")
+            else:
+                log.write(f"  Ollama base URL: {self.settings.ollama_base_url}")
             return True
         if cmd == "usage":
             log.write(get_usage_tracker().format_report())

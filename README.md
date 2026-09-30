@@ -50,8 +50,8 @@ Skip this script if you use Docker Desktop, OrbStack, or Linux/WSL2 — still gi
 `./start-service.sh` then:
 
 1. Writes the chosen model to `config.toml`
-2. Starts Ollama and checks Docker RAM against the model's `min_ram_gb` (fails early if the VM is too small)
-3. Pulls the model if it is not already installed (`qwen2.5` → [`qwen2.5:3b`](https://ollama.com/library/qwen2.5:3b), `qwen3.5` → [`qwen3.5:4b`](https://ollama.com/library/qwen3.5:4b))
+2. For an Ollama model, starts Ollama, checks Docker RAM against `min_ram_gb`, and pulls the tag if it is not installed (`qwen2.5` → [`qwen2.5:3b`](https://ollama.com/library/qwen2.5:3b), `qwen3.5` → [`qwen3.5:4b`](https://ollama.com/library/qwen3.5:4b))
+3. For `lmstudio`, checks that LM Studio already has a model loaded at `http://127.0.0.1:1234/v1` and does not start Ollama
 4. Recreates the API container on `:8000`
 
 The first pull is slow; weights stay in `crew_pipeline_ollama_data` across `./stop-service.sh`.
@@ -187,7 +187,7 @@ THINKING_ENABLED=false
 `./start-service.sh` asks for the model every time. The saved default is pre-selected — press Return to keep it, or pick another. The picker also shows each model's Docker RAM note from `config.toml`. The choice is written to `config.toml`.
 
 ```toml
-model = "qwen2.5"   # or "qwen3.5"
+model = "qwen2.5"   # or "qwen3.5" or "lmstudio"
 ```
 
 ```bash
@@ -201,6 +201,7 @@ model = "qwen2.5"   # or "qwen3.5"
 |-----|--------|------|--------|
 | `qwen2.5` | `qwen2.5:3b` | ~2 GB | https://ollama.com/library/qwen2.5:3b |
 | `qwen3.5` | `qwen3.5:4b` | ~3.4 GB | https://ollama.com/library/qwen3.5:4b |
+| `lmstudio` | nothing — talks to a server you already started | — | http://localhost:1234/v1 |
 
 See `.env.example` for the other knobs:
 

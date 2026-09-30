@@ -1,7 +1,7 @@
 # Source after ROOT is set. Exports MODEL_NAME, NUM_CTX, TLC_MODEL_KEY,
-# MIN_RAM_GB, KV_BYTES_PER_TOKEN, MAX_CTX, CTX_OPTIONS
-# from the repo-root config.toml (qwen2.5 | qwen3.5). POSIX awk only —
-# macOS /usr/bin/python3 is often too old for tomllib.
+# LLM_PROVIDER, LLM_BASE_URL, MIN_RAM_GB, KV_BYTES_PER_TOKEN, MAX_CTX,
+# CTX_OPTIONS from the repo-root config.toml (qwen2.5 | qwen3.5 | lmstudio).
+# POSIX awk only — macOS /usr/bin/python3 is often too old for tomllib.
 if [[ -z "${ROOT:-}" ]]; then
   echo "error: ROOT must be set before sourcing scripts/compose-env.sh" >&2
   return 1 2>/dev/null || exit 1
@@ -39,6 +39,8 @@ eval "$(
       k = trim(substr($0, 1, eq - 1))
       v = trim(substr($0, eq + 1))
       if (k == "ollama") ollama = v
+      if (k == "provider") provider = v
+      if (k == "base_url") base_url = v
       if (k == "num_ctx") num_ctx = v
       if (k == "min_ram_gb") min_ram = v
       if (k == "kv_bytes_per_token") kv = v
@@ -56,8 +58,13 @@ eval "$(
         print "error: config.toml is missing model =" > "/dev/stderr"
         exit 1
       }
-      if (ollama == "") {
+      if (provider == "") provider = "ollama"
+      if (provider == "ollama" && ollama == "") {
         print "error: unknown model \"" key "\" in config.toml (need [models.\"" key "\"])" > "/dev/stderr"
+        exit 1
+      }
+      if (provider == "openai" && base_url == "") {
+        print "error: model \"" key "\" is openai but has no base_url" > "/dev/stderr"
         exit 1
       }
       if (num_ctx == "") num_ctx = 2048
@@ -68,6 +75,8 @@ eval "$(
       print "MODEL_NAME=" ollama
       print "NUM_CTX=" num_ctx
       print "TLC_MODEL_KEY=" key
+      print "LLM_PROVIDER=" provider
+      print "LLM_BASE_URL=" base_url
       print "MIN_RAM_GB=" min_ram
       print "KV_BYTES_PER_TOKEN=" kv
       print "MAX_CTX=" max_ctx
@@ -75,4 +84,4 @@ eval "$(
     }
   ' "$config"
 )"
-export MODEL_NAME NUM_CTX TLC_MODEL_KEY MIN_RAM_GB KV_BYTES_PER_TOKEN MAX_CTX CTX_OPTIONS
+export MODEL_NAME NUM_CTX TLC_MODEL_KEY LLM_PROVIDER LLM_BASE_URL MIN_RAM_GB KV_BYTES_PER_TOKEN MAX_CTX CTX_OPTIONS

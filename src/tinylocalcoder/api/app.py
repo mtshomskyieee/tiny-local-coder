@@ -20,8 +20,10 @@ _POLL_SECONDS = 0.5
 
 
 def probe_ollama() -> dict[str, Any]:
-    """Ollama reachability and the configured model name."""
+    """Reachability of the configured backend and the model name."""
     settings = get_settings()
+    if settings.llm_provider == "openai":
+        return _probe_openai(settings)
     ollama_ok = False
     detail = ""
     try:
@@ -32,7 +34,27 @@ def probe_ollama() -> dict[str, Any]:
         detail = str(exc)
     return {
         "status": "ok" if ollama_ok else "degraded",
+        "provider": "ollama",
         "ollama": ollama_ok,
+        "ollama_detail": detail,
+        "model": settings.model_name,
+    }
+
+
+def _probe_openai(settings: Any) -> dict[str, Any]:
+    ok = False
+    detail = ""
+    url = settings.llm_base_url.rstrip("/") + "/models"
+    try:
+        r = httpx.get(url, timeout=3.0)
+        ok = r.status_code == 200
+        detail = "ok" if ok else r.text[:200]
+    except Exception as exc:  # noqa: BLE001
+        detail = str(exc)
+    return {
+        "status": "ok" if ok else "degraded",
+        "provider": "openai",
+        "ollama": False,
         "ollama_detail": detail,
         "model": settings.model_name,
     }

@@ -26,7 +26,7 @@ tlc_current_model_key() {
   ' "$(tlc_config_path)"
 }
 
-# Prints: key|ollama|url  one catalog entry per line (order preserved).
+# Prints: key|ollama|url|ram|provider  one catalog entry per line (order preserved).
 tlc_list_models() {
   awk '
     function trim(s) {
@@ -35,8 +35,8 @@ tlc_list_models() {
       return s
     }
     function flush() {
-      if (cur != "") print cur "|" ollama "|" url "|" ram
-      cur = ""; ollama = ""; url = ""; ram = ""
+      if (cur != "") print cur "|" ollama "|" url "|" ram "|" provider
+      cur = ""; ollama = ""; url = ""; ram = ""; provider = ""
     }
     /^[[:space:]]*#/ || /^[[:space:]]*$/ { next }
     /^\[models\./ {
@@ -57,6 +57,7 @@ tlc_list_models() {
       if (k == "ollama") ollama = v
       if (k == "url") url = v
       if (k == "min_ram_gb") ram = v
+      if (k == "provider") provider = v
     }
     END { flush() }
   ' "$(tlc_config_path)"
@@ -80,7 +81,10 @@ tlc_save_model() {
   fi
   if ! tlc_model_exists "$key"; then
     echo "error: unknown model '$key'. Choose one of:" >&2
-    tlc_list_models | awk -F'|' '{ print "  " $1 "  →  " $2 }' >&2
+    tlc_list_models | awk -F'|' '{
+      target = ($5 == "openai" ? $3 : $2)
+      print "  " $1 "  →  " target
+    }' >&2
     return 1
   fi
   config="$(tlc_config_path)"
@@ -103,29 +107,35 @@ tlc_save_model() {
 # Interactive picker. Writes the chosen key to config.toml.
 # Return accepts the saved default (already selected).
 tlc_prompt_model() {
-  local current choice i key ollama url n default_n
+  local current choice i key ollama url ram provider n default_n target
   current="$(tlc_current_model_key)"
   if [[ -z "$current" ]]; then
     current="qwen2.5"
   fi
 
   echo
-  echo "Select the local Ollama model (saved in config.toml)"
+  echo "Select the model (saved in config.toml)"
   i=0
   default_n=1
-  while IFS='|' read -r key ollama url ram; do
+  while IFS='|' read -r key ollama url ram provider; do
     i=$((i + 1))
+    provider="${provider:-ollama}"
     ram_note=""
     if [[ -n "$ram" && "$ram" != "0" ]]; then
       ram_note="  (~${ram} GB Docker RAM)"
     fi
+    if [[ "$provider" == "openai" ]]; then
+      target="$url"
+    else
+      target="$ollama"
+    fi
     if [[ "$key" == "$current" ]]; then
       default_n="$i"
-      printf '  %d) %s  →  %s%s  [default]\n' "$i" "$key" "$ollama" "$ram_note"
+      printf '  %d) %s  →  %s%s  [default]\n' "$i" "$key" "$target" "$ram_note"
     else
-      printf '  %d) %s  →  %s%s\n' "$i" "$key" "$ollama" "$ram_note"
+      printf '  %d) %s  →  %s%s\n' "$i" "$key" "$target" "$ram_note"
     fi
-    if [[ -n "$url" ]]; then
+    if [[ -n "$url" && "$provider" != "openai" ]]; then
       printf '       %s\n' "$url"
     fi
   done < <(tlc_list_models)
@@ -149,11 +159,15 @@ tlc_prompt_model() {
 
   if [[ "$choice" =~ ^[0-9]+$ ]] && (( choice >= 1 && choice <= n )); then
     i=0
-    while IFS='|' read -r key ollama url; do
+    while IFS='|' read -r key ollama url ram provider; do
       i=$((i + 1))
       if [[ "$i" -eq "$choice" ]]; then
         tlc_save_model "$key"
-        echo "Saved model = \"$key\" → $ollama"
+        if [[ "${provider:-ollama}" == "openai" ]]; then
+          echo "Saved model = \"$key\" → $url"
+        else
+          echo "Saved model = \"$key\" → $ollama"
+        fi
         return 0
       fi
     done < <(tlc_list_models)

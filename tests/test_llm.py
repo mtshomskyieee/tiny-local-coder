@@ -48,6 +48,18 @@ def test_get_llm_disables_reasoning(settings) -> None:
     assert getattr(llm, "reasoning", None) is False
 
 
+def test_get_llm_openai_uses_chat_openai(settings) -> None:
+    from langchain_openai import ChatOpenAI
+
+    settings.llm_provider = "openai"
+    settings.llm_base_url = "http://127.0.0.1:1234/v1"
+    settings.model_name = "local-model"
+    llm = get_llm(settings)
+    assert isinstance(llm, ChatOpenAI)
+    assert llm.model_name == "local-model"
+    assert str(llm.openai_api_base).rstrip("/") == "http://127.0.0.1:1234/v1"
+
+
 def test_run_plan_agent_rejects_empty_reply(
     memory: WorkspaceMemory, monkeypatch: pytest.MonkeyPatch
 ) -> None:
