@@ -14,6 +14,29 @@ from tinylocalcoder.config import get_settings
 from tinylocalcoder.exec.gate import ApprovalGate, Decision, PendingCommand
 from tinylocalcoder.graph.builder import Pipeline, build_pipeline
 
+_SETTLED = frozenset({"pending_approval", "ok", "error", "denied"})
+_POLL_ATTEMPTS = 120
+_POLL_SECONDS = 0.5
+
+
+def probe_ollama() -> dict[str, Any]:
+    """Ollama reachability and the configured model name."""
+    settings = get_settings()
+    ollama_ok = False
+    detail = ""
+    try:
+        r = httpx.get(f"{settings.ollama_base_url}/api/tags", timeout=3.0)
+        ollama_ok = r.status_code == 200
+        detail = "ok" if ollama_ok else r.text[:200]
+    except Exception as exc:  # noqa: BLE001
+        detail = str(exc)
+    return {
+        "status": "ok" if ollama_ok else "degraded",
+        "ollama": ollama_ok,
+        "ollama_detail": detail,
+        "model": settings.model_name,
+    }
+
 
 class ApiSession:
     def __init__(self) -> None:
@@ -124,29 +147,45 @@ class ApiSession:
             progress=self.pipeline.memory.progress_summary(),
         )
 
+    def run_until_settled(
+        self,
+        mode: str,
+        prompt: str,
+        thinking_enabled: bool | None,
+        *,
+        workflow: str | None = None,
+    ) -> RunResponse:
+        """Start a run and wait until it settles or the short poll window ends."""
+        self.start_run(mode, prompt, thinking_enabled, workflow=workflow)
+        return self.wait_until_settled(mode)
+
+    def wait_until_settled(self, mode: str) -> RunResponse:
+        """Poll until pending approval, a terminal status, or ~60s."""
+        for _ in range(_POLL_ATTEMPTS):
+            self.wait_briefly(_POLL_SECONDS)
+            snap = self.snapshot(mode)
+            if snap.status in _SETTLED:
+                return snap
+            if self._done.is_set():
+                return self.snapshot(mode)
+        return self.snapshot(mode)
+
 
 def create_app(session: ApiSession | None = None) -> FastAPI:
-    app = FastAPI(title="TinyLocalCoder", version="0.1.0")
+    from tinylocalcoder.mcp_server import build_mcp
+
     state = session or ApiSession()
+    mcp_app = build_mcp(state).http_app(path="/", transport="streamable-http")
+    app = FastAPI(
+        title="TinyLocalCoder",
+        version="0.1.0",
+        lifespan=mcp_app.lifespan,
+    )
     app.state.session = state
 
     @app.get("/health")
     def health() -> dict[str, Any]:
-        settings = get_settings()
-        ollama_ok = False
-        detail = ""
-        try:
-            r = httpx.get(f"{settings.ollama_base_url}/api/tags", timeout=3.0)
-            ollama_ok = r.status_code == 200
-            detail = "ok" if ollama_ok else r.text[:200]
-        except Exception as exc:  # noqa: BLE001
-            detail = str(exc)
-        return {
-            "status": "ok" if ollama_ok else "degraded",
-            "ollama": ollama_ok,
-            "ollama_detail": detail,
-            "model": settings.model_name,
-        }
+        return probe_ollama()
 
     def _run_mode(
         mode: str,
@@ -155,21 +194,11 @@ def create_app(session: ApiSession | None = None) -> FastAPI:
         workflow: str | None = None,
     ) -> RunResponse:
         try:
-            state.start_run(
+            return state.run_until_settled(
                 mode, body.prompt, body.thinking_enabled, workflow=workflow
             )
         except RuntimeError as exc:
             raise HTTPException(status_code=409, detail=str(exc)) from exc
-
-        # Poll until pending approval, completion, or short timeout window
-        for _ in range(120):  # up to ~60s of waiting for first LLM token / gate
-            state.wait_briefly(0.5)
-            snap = state.snapshot(mode)
-            if snap.status in {"pending_approval", "ok", "error", "denied"}:
-                return snap
-            if state._done.is_set():
-                return state.snapshot(mode)
-        return state.snapshot(mode)
 
     @app.post("/v1/plan", response_model=RunResponse)
     def plan(body: PromptRequest) -> RunResponse:
@@ -216,15 +245,7 @@ def create_app(session: ApiSession | None = None) -> FastAPI:
         ok = state.gate.approve(body.command_id, body.decision)
         if not ok:
             raise HTTPException(status_code=404, detail="Unknown command_id")
-        # Wait for run to finish or next pending command
-        for _ in range(120):
-            state.wait_briefly(0.5)
-            snap = state.snapshot("execute")
-            if snap.status in {"pending_approval", "ok", "error", "denied"}:
-                return snap
-            if state._done.is_set():
-                return state.snapshot("execute")
-        return state.snapshot("execute")
+        return state.wait_until_settled("execute")
 
     @app.post("/v1/workspace/clear")
     def clear_workspace() -> dict[str, Any]:
@@ -250,6 +271,7 @@ def create_app(session: ApiSession | None = None) -> FastAPI:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
         return JSONResponse({"path": path, "content": content})
 
+    app.mount("/mcp", mcp_app)
     return app
 
 

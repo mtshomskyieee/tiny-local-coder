@@ -72,7 +72,7 @@ flowchart LR
 
 Optional trailing text is appended to the fixed prompt (`/review focus on src/`, `/review-fix only high`, `/fix-plan start_service.sh`, `/test only unit`). `/soup-to-nuts <requirement>` uses the trailing text as the product `/plan` prompt; nested review/test stages get no extra note.
 
-API mirrors: `POST /v1/review`, `POST /v1/review-fix`, `POST /v1/fix-plan`, `POST /v1/test`, `POST /v1/soup-to-nuts`.
+API mirrors: `POST /v1/review`, `POST /v1/review-fix`, `POST /v1/fix-plan`, `POST /v1/test`, `POST /v1/soup-to-nuts`. The same process also serves curated MCP tools at `http://127.0.0.1:8000/mcp` (plan, code, execute, ask, review, review_fix, fix_plan, test, status, approve, and workspace reads), sharing this session and its approval gate.
 
 ### Recovery and plan hygiene (during execute)
 

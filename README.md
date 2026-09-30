@@ -228,6 +228,52 @@ See `.env.example` for the other knobs:
 - `GET /v1/workspace/files`
 - `GET /v1/workspace/file?path=plan.md`
 
+## MCP
+
+The API process also speaks [MCP](https://modelcontextprotocol.io) at `http://127.0.0.1:8000/mcp` (streamable HTTP). Tools cover `plan`, `code`, `execute`, `ask`, `review`, `review_fix`, `fix_plan`, `test`, `status`, `approve`, and reading the workspace. They share the REST session and the approval gate: a `pending_approval` result is resolved with the `approve` tool (`allow`, `deny`, or `allow_all`). A `running` result means call `status`. `soup-to-nuts` and workspace clear stay on REST.
+
+OpenCode (`opencode.json`):
+
+```json
+{
+  "$schema": "https://opencode.ai/config.json",
+  "mcp": {
+    "tinylocalcoder": {
+      "type": "remote",
+      "url": "http://127.0.0.1:8000/mcp",
+      "enabled": true,
+      "oauth": false
+    }
+  }
+}
+```
+
+Claude Code, with the service already running:
+
+```bash
+claude mcp add --transport http tinylocalcoder http://127.0.0.1:8000/mcp
+```
+
+That registers the server for the current project. Add `--scope user` to use it from every project.
+
+Claude Code does not read [`docs/llm.txt`](docs/llm.txt) by itself. That file is the contract: tool names, the approval loop, and when to poll `status`. Import it from `CLAUDE.md` (this repo, or `~/.claude/CLAUDE.md` for every project):
+
+```markdown
+When calling TinyLocalCoder, follow @docs/llm.txt
+```
+
+From another project, use the absolute path:
+
+```markdown
+When calling TinyLocalCoder, follow @/absolute/path/to/tiny-local-coder/docs/llm.txt
+```
+
+A client that only spawns a local process can bridge to that same URL, so it still hits the one session:
+
+```bash
+npx -y mcp-remote http://127.0.0.1:8000/mcp
+```
+
 ## Screenshots
 
 The images above are real captures of the TUI driven against a real local model. Regenerate them with:
