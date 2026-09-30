@@ -1,0 +1,197 @@
+# TinyLocalCoder — REST and MCP for agents
+
+TinyLocalCoder is a local coding agent (small Ollama model, disk-backed workspace). One process on port 8000 owns one session: one pipeline, one approval gate, one run at a time. REST and MCP share that session. A second call while a run is in progress fails. Nothing here auto-approves a shell command.
+
+Base URL: `http://127.0.0.1:8000`
+Auth: none
+Start: `./start-service.sh` (API and MCP come up together)
+
+Prefer MCP when the client already speaks it (Claude Code, OpenCode). Prefer REST for curl, scripts, and the two operations MCP does not expose (`soup-to-nuts`, workspace clear).
+
+## Shared result
+
+Run endpoints and MCP run tools return the same object:
+
+```json
+{
+  "status": "ok",
+  "mode": "plan",
+  "output": "",
+  "phase": "",
+  "last_file": "",
+  "last_command": "",
+  "progress": {
+    "files_done": 0,
+    "files_total": 0,
+    "cmds_done": 0,
+    "cmds_total": 0,
+    "todos_done": 0,
+    "todos_skipped": 0,
+    "todos_total": 0
+  },
+  "pending_approval": null,
+  "critic": "",
+  "error": "",
+  "raw": {}
+}
+```
+
+`status` values:
+
+- `ok` — the pass finished
+- `error` — the pass failed; read `error`
+- `denied` — a required approval was denied (soup-to-nuts consent)
+- `pending_approval` — a shell command is parked; `pending_approval` is set
+- `running` — still working after the ~60s wait; poll status; do not start another run
+
+`pending_approval` when set:
+
+```json
+{
+  "command_id": "uuid",
+  "command": "python3 -c \"...\"",
+  "cwd": "/workspace",
+  "reason": ""
+}
+```
+
+Prompt body for every run call (REST JSON, or MCP arguments):
+
+```json
+{ "prompt": "create and run hello_world.py", "thinking_enabled": null }
+```
+
+`prompt` may be `""`. Omit `thinking_enabled` (or pass `null`) to keep the server default. `true` or `false` overrides it for that call.
+
+Wait contract: the call blocks until `pending_approval`, `ok`, `error`, or `denied`, or about 60 seconds, then returns `running`. The run keeps going in the background. Poll status until it leaves `running`. If it returns `pending_approval`, approve that `command_id`, then follow the next result the same way.
+
+Decisions:
+
+- `allow` — this command once
+- `deny` — skip it and log
+- `allow_all` — approve this command and every later shell command in this session
+
+A busy session is an error, not a queue. REST: HTTP 409, detail `A run is already in progress`. MCP: tool error with that same text. Wait, then call status.
+
+## What to call
+
+| Goal | REST | MCP tool |
+| --- | --- | --- |
+| Is Ollama up? | `GET /health` | `health` |
+| Current run | `GET /v1/status` | `status` |
+| List workspace files | `GET /v1/workspace/files` | `list_files` |
+| Read one file | `GET /v1/workspace/file?path=plan.md` | `read_file` |
+| Write `plan.md` | `POST /v1/plan` | `plan` |
+| Next create/refine, or edit one file | `POST /v1/code` | `code` |
+| Walk open todos (gated shell) | `POST /v1/execute` | `execute` |
+| Q&A into `ask.md` | `POST /v1/ask` | `ask` |
+| Inventory, write `review.md`, then execute | `POST /v1/review` | `review` |
+| Plan fixes from `review.md`, then execute | `POST /v1/review-fix` | `review_fix` |
+| Rewrite open todos to match the requirement; do not execute | `POST /v1/fix-plan` | `fix_plan` |
+| Write a short test plan, then execute it | `POST /v1/test` | `test` |
+| Approve a parked command | `POST /v1/execute/approve` | `approve` |
+| plan → execute → review → review-fix → test | `POST /v1/soup-to-nuts` | not exposed |
+| Archive the live workspace and blank plan/ask | `POST /v1/workspace/clear` | not exposed |
+
+`prompt` on review, review-fix, fix-plan, and test is an optional note appended to the fixed workflow prompt (`focus on src`, `only high`). On soup-to-nuts, `prompt` is the product requirement.
+
+## REST
+
+`Content-Type: application/json` on POST bodies.
+
+`GET /health`
+
+```json
+{ "status": "ok", "ollama": true, "ollama_detail": "ok", "model": "qwen2.5:3b" }
+```
+
+`status` is `degraded` when Ollama is down. HTTP 200 either way.
+
+`GET /v1/status` — snapshot of the last run. No body.
+
+`GET /v1/workspace/files` → `{ "files": ["plan.md", "hello_world.py"] }`. Omits `archive/` and `.index/`.
+
+`GET /v1/workspace/file?path=plan.md` → `{ "path": "plan.md", "content": "..." }`. `path` is workspace-relative. A path that escapes the workspace, or a missing file, is HTTP 400 with the error text.
+
+`POST /v1/execute/approve`
+
+```json
+{ "command_id": "uuid-from-pending_approval", "decision": "allow" }
+```
+
+Unknown `command_id`: HTTP 404, detail `Unknown command_id`. The response is the next `RunResponse` (`pending_approval`, `ok`, `error`, `denied`, or `running`).
+
+`POST /v1/workspace/clear` — no body. Refuses with HTTP 409 if a run is in progress. Success: `{ "status": "ok", "archive": "archive/<timestamp>" }`.
+
+`POST /v1/soup-to-nuts` with `{ "prompt": "<requirement>" }`. The first result is usually `pending_approval` for the command `soup-to-nuts: allow all shell commands for this run`. Approve with `allow` or `allow_all` (both unlock the rest of that run). `deny` aborts with `status: "denied"`. Do not plan first; this workflow writes `plan.md` itself. It can stay `running` for a long time; poll `GET /v1/status`.
+
+Other POSTs take the prompt body above and return `RunResponse`.
+
+## MCP
+
+Streamable HTTP at `http://127.0.0.1:8000/mcp`. No auth, no OAuth.
+
+OpenCode (`opencode.json`):
+
+```json
+{
+  "$schema": "https://opencode.ai/config.json",
+  "mcp": {
+    "tinylocalcoder": {
+      "type": "remote",
+      "url": "http://127.0.0.1:8000/mcp",
+      "enabled": true,
+      "oauth": false
+    }
+  }
+}
+```
+
+Claude Code: `claude mcp add --transport http tinylocalcoder http://127.0.0.1:8000/mcp`
+
+A stdio-only client should bridge to that URL (`npx -y mcp-remote http://127.0.0.1:8000/mcp`) so it uses this session. Do not spawn a second TinyLocalCoder process against the same workspace.
+
+Tools take the same fields as the table. Run tools (`plan`, `code`, `execute`, `ask`, `review`, `review_fix`, `fix_plan`, `test`) take `prompt` (string, default `""`) and optional `thinking_enabled` (bool or null). They return the `RunResponse` object.
+
+`approve` arguments: `command_id` (string), `decision` (`allow` | `deny` | `allow_all`). Unknown id is a tool error `Unknown command_id`.
+
+`list_files` → `{ "files": ["..."] }`. `read_file` takes `path` and returns `{ "path", "content" }`. A bad path is a tool error with the same text as the REST 400.
+
+`health` matches `GET /health`. `status` matches `GET /v1/status`.
+
+If a tool result has `status: "pending_approval"`, call `approve` with that `command_id`. If `status` is `running`, call `status`.
+
+## Usual sequences
+
+Build something:
+
+1. `plan` with the requirement. Read `plan.md` (`read_file` / `GET /v1/workspace/file?path=plan.md`) if you need to see the todos.
+2. `execute` with an empty prompt.
+3. On each `pending_approval`, `approve` with `allow` (or `allow_all` once you trust the rest of the run).
+4. On `running`, poll `status` until the status changes.
+5. Read `plan.md` and the files the todos created. `progress.todos_skipped` counts steps marked `[!]`.
+
+Review existing code: `review` (optional prompt note), approve any shell commands, then read `review.md`. Apply findings with `review_fix`.
+
+Tests: `test`. Compare the requirement to the plan without running it: `fix_plan`, then `execute` yourself.
+
+Ask a question about the workspace: `ask`, then read `ask.md` if `output` is thin.
+
+Unattended full run (REST only): `POST /v1/soup-to-nuts`, approve the consent command, poll `GET /v1/status`.
+
+## Files worth reading
+
+- `plan.md` — Goal and numbered todos (`[ ]` open, `[x]` done, `[!]` skipped)
+- `review.md` — per-file notes from `review`
+- `manifest.txt` — file inventory written before a review plan
+- `ask.md` — ask transcript
+- `exec.log` — gated command results
+
+Generated sources live in the workspace root (and under paths the plan names). `archive/` is history; list and read tools skip it.
+
+## Do not
+
+- Start a second plan/execute/review/test while status is `running` or `pending_approval`.
+- Invent a `/v1/fix` endpoint. There is no MCP `fix` tool. Recovery during `execute` is automatic (one code retry, maybe one replan, then skip).
+- Send shell commands as if this were a generic terminal. The only shell entry is the approval gate inside `execute` and the workflows that execute.
+- Call soup-to-nuts or clear through MCP. They are REST only.
