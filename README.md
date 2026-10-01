@@ -14,7 +14,7 @@
 ## Requirements
 
 - Docker + Docker Compose
-- ~12 GB RAM for the Docker VM (CPU-only is fine). Default Colima is 2 GB — too small for `qwen3.5:4b`.
+- ~12 GB RAM for the Docker VM (CPU-only is fine). Default Colima is 2 GB — too small for `qwen3.5:4b`. `devstral-small-2` wants about 20 GB and does not fit the laptop profile's 5 GB Ollama cap.
 - No GPU
 
 ## Docker on a Mac (Colima)
@@ -50,8 +50,8 @@ Skip this script if you use Docker Desktop, OrbStack, or Linux/WSL2 — still gi
 `./start-service.sh` then:
 
 1. Writes the chosen model to `config.toml`
-2. Starts Ollama and checks Docker RAM against the model's `min_ram_gb` (fails early if the VM is too small)
-3. Pulls the model if it is not already installed (`qwen2.5` → [`qwen2.5:3b`](https://ollama.com/library/qwen2.5:3b), `qwen3.5` → [`qwen3.5:4b`](https://ollama.com/library/qwen3.5:4b))
+2. For an Ollama model, starts Ollama, checks Docker RAM against `min_ram_gb`, and pulls the tag if it is not installed (`qwen2.5` → [`qwen2.5:3b`](https://ollama.com/library/qwen2.5:3b), `qwen2.5-coder-3b` → [`qwen2.5-coder:3b`](https://ollama.com/library/qwen2.5-coder:3b), `qwen2.5-coder-7b` → [`qwen2.5-coder:7b`](https://ollama.com/library/qwen2.5-coder:7b), `qwen3.5` → [`qwen3.5:4b`](https://ollama.com/library/qwen3.5:4b), `devstral-small-2` → [`devstral-small-2:24b`](https://ollama.com/library/devstral-small-2:24b))
+3. For `lmstudio`, checks that LM Studio already has a model loaded at `http://127.0.0.1:1234/v1` and does not start Ollama
 4. Recreates the API container on `:8000`
 
 The first pull is slow; weights stay in `crew_pipeline_ollama_data` across `./stop-service.sh`.
@@ -187,7 +187,7 @@ THINKING_ENABLED=false
 `./start-service.sh` asks for the model every time. The saved default is pre-selected — press Return to keep it, or pick another. The picker also shows each model's Docker RAM note from `config.toml`. The choice is written to `config.toml`.
 
 ```toml
-model = "qwen2.5"   # or "qwen3.5"
+model = "qwen2.5"   # or "qwen2.5-coder-3b", "qwen2.5-coder-7b", "qwen3.5", "devstral-small-2", or "lmstudio"
 ```
 
 ```bash
@@ -200,7 +200,11 @@ model = "qwen2.5"   # or "qwen3.5"
 | Key | Pulls | Size | Source |
 |-----|--------|------|--------|
 | `qwen2.5` | `qwen2.5:3b` | ~2 GB | https://ollama.com/library/qwen2.5:3b |
+| `qwen2.5-coder-3b` | `qwen2.5-coder:3b` | ~1.9 GB | https://ollama.com/library/qwen2.5-coder:3b |
+| `qwen2.5-coder-7b` | `qwen2.5-coder:7b` | ~4.7 GB | https://ollama.com/library/qwen2.5-coder:7b |
 | `qwen3.5` | `qwen3.5:4b` | ~3.4 GB | https://ollama.com/library/qwen3.5:4b |
+| `devstral-small-2` | `devstral-small-2:24b` | ~15 GB | https://ollama.com/library/devstral-small-2:24b |
+| `lmstudio` | nothing — talks to a server you already started | — | http://localhost:1234/v1 |
 
 See `.env.example` for the other knobs:
 

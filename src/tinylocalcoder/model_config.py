@@ -22,6 +22,8 @@ class ModelSpec:
     num_ctx: int
     url: str
     min_ram_gb: int = 0
+    provider: str = "ollama"
+    base_url: str = ""
 
 
 def default_spec() -> ModelSpec:
@@ -30,6 +32,7 @@ def default_spec() -> ModelSpec:
         ollama=DEFAULT_OLLAMA,
         num_ctx=DEFAULT_NUM_CTX,
         url=DEFAULT_URL,
+        provider="ollama",
     )
 
 
@@ -59,14 +62,28 @@ def find_config_path(explicit: str | Path | None = None) -> Path | None:
 def _parse_spec(key: str, raw: object) -> ModelSpec:
     if not isinstance(raw, dict):
         raise ValueError(f"models.{key} must be a table")
+    provider = str(raw.get("provider") or "ollama").strip() or "ollama"
     ollama = str(raw.get("ollama") or "").strip()
-    if not ollama:
+    base_url = str(raw.get("base_url") or "").strip()
+    if provider == "ollama" and not ollama:
         raise ValueError(f"models.{key}.ollama is required")
+    if provider == "openai" and not base_url:
+        raise ValueError(f"models.{key}.base_url is required")
     num_ctx = int(raw.get("num_ctx") or DEFAULT_NUM_CTX)
-    url = str(raw.get("url") or f"https://ollama.com/library/{ollama}").strip()
+    if ollama:
+        default_url = f"https://ollama.com/library/{ollama}"
+    else:
+        default_url = base_url
+    url = str(raw.get("url") or default_url).strip()
     min_ram_gb = int(raw.get("min_ram_gb") or 0)
     return ModelSpec(
-        key=key, ollama=ollama, num_ctx=num_ctx, url=url, min_ram_gb=min_ram_gb
+        key=key,
+        ollama=ollama,
+        num_ctx=num_ctx,
+        url=url,
+        min_ram_gb=min_ram_gb,
+        provider=provider,
+        base_url=base_url,
     )
 
 
@@ -113,6 +130,8 @@ def export_env(spec: ModelSpec) -> str:
         f"MODEL_NAME={spec.ollama}\n"
         f"NUM_CTX={spec.num_ctx}\n"
         f"TLC_MODEL_KEY={spec.key}\n"
+        f"LLM_PROVIDER={spec.provider}\n"
+        f"LLM_BASE_URL={spec.base_url}\n"
     )
 
 
@@ -126,7 +145,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--export",
         action="store_true",
-        help="Print MODEL_NAME / NUM_CTX / TLC_MODEL_KEY for eval",
+        help="Print MODEL_NAME / NUM_CTX / TLC_MODEL_KEY / LLM_PROVIDER for eval",
     )
     args = parser.parse_args(argv)
     try:
@@ -137,7 +156,8 @@ def main(argv: list[str] | None = None) -> int:
     if args.export:
         sys.stdout.write(export_env(spec))
         return 0
-    print(f"{spec.key} → {spec.ollama}  (num_ctx={spec.num_ctx})")
+    shown = spec.base_url if spec.provider == "openai" else spec.ollama
+    print(f"{spec.key} → {shown}  (num_ctx={spec.num_ctx})")
     print(spec.url)
     return 0
 

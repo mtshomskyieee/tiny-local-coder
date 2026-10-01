@@ -15,8 +15,10 @@ if [[ ! -x "$PY" ]]; then
 fi
 
 # pytest is deliberately not in requirements.txt / the app image; it lives
-# here so the test run stays self-contained.
-if ! "$PY" -c "import pytest, tinylocalcoder" >/dev/null 2>&1; then
+# here so the test run stays self-contained. The venv is kept across runs, so
+# a newly declared dependency (langchain_openai) is installed on the next run
+# rather than only when the venv is first created.
+if ! "$PY" -c "import pytest, tinylocalcoder, langchain_openai" >/dev/null 2>&1; then
   echo "Installing test dependencies …"
   "$PY" -m pip install --quiet --upgrade pip
   "$PY" -m pip install --quiet pytest -e .

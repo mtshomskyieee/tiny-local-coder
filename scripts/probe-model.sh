@@ -29,9 +29,80 @@ for m in models:
 ' 2>/dev/null || true
 }
 
+# One short chat completion against LM Studio. It does not report Ollama's
+# load / prompt-eval split, so this prints wall time and completion tokens.
+tlc_probe_openai() {
+  local base model payload body time_total
+  base="${LLM_BASE_URL:-http://127.0.0.1:1234/v1}"
+  base="${base%/}"
+  model="${MODEL_NAME:-}"
+  if [[ -z "$model" ]]; then
+    return 0
+  fi
+  if ! command -v curl >/dev/null 2>&1 || ! command -v python3 >/dev/null 2>&1; then
+    return 0
+  fi
+  echo "Probing $model at $base …"
+  payload="$(python3 -c '
+import json, sys
+print(json.dumps({
+    "model": sys.argv[1],
+    "messages": [{
+        "role": "user",
+        "content": "Reply with exactly one short sentence about the C language.",
+    }],
+    "max_tokens": 32,
+    "temperature": 0,
+}))' "$model")"
+  body="$(mktemp "${TMPDIR:-/tmp}/tlc-probe.XXXXXX")"
+  time_total="$(curl -fsS --max-time 300 -o "$body" -w '%{time_total}' \
+    "$base/chat/completions" -H 'Content-Type: application/json' -d "$payload" 2>/dev/null || true)"
+  if [[ ! -s "$body" ]]; then
+    rm -f "$body"
+    echo "  probe did not complete — LM Studio did not answer in time" >&2
+    return 0
+  fi
+  TLC_PROBE_SECONDS="$time_total" python3 -c '
+import json, os, sys
+try:
+    d = json.load(open(sys.argv[1], encoding="utf-8"))
+except Exception:
+    sys.exit(0)
+total = float(os.environ.get("TLC_PROBE_SECONDS") or 0)
+usage = d.get("usage") or {}
+n = usage.get("completion_tokens") or 0
+err = d.get("error")
+if isinstance(err, dict):
+    print("  probe          " + str(err.get("message") or err))
+    sys.exit(0)
+print(f"  total          {total:6.1f} s")
+if n and total > 0:
+    print(f"  throughput     {n / total:6.1f} tok/s  ({n} tokens)")
+    rate = n / total
+else:
+    rate = 0.0
+if rate >= 8:
+    verdict = "OK"
+elif rate >= 4:
+    verdict = "USABLE — a plan step will take a minute or two"
+elif rate > 0:
+    verdict = "SLOW — consider a smaller model in LM Studio"
+elif d.get("choices"):
+    verdict = "answered (no token timing)"
+else:
+    verdict = "no timing returned"
+print(f"  verdict        {verdict}")
+' "$body" 2>/dev/null || true
+  rm -f "$body"
+}
+
 # One short generation at the configured context. Prints load time, time to
 # first token and throughput, then a verdict.
 tlc_probe_model() {
+  if [[ "${LLM_PROVIDER:-ollama}" == "openai" ]]; then
+    tlc_probe_openai
+    return 0
+  fi
   local model="${MODEL_NAME:-}" ctx="${NUM_CTX:-2048}" payload json
   [[ -z "$model" ]] && return 0
   if ! command -v curl >/dev/null 2>&1 || ! command -v python3 >/dev/null 2>&1; then

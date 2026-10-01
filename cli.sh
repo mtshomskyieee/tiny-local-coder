@@ -7,6 +7,8 @@ cd "$ROOT"
 
 # shellcheck source=scripts/compose-env.sh
 source "$ROOT/scripts/compose-env.sh"
+# shellcheck source=scripts/lmstudio.sh
+source "$ROOT/scripts/lmstudio.sh"
 
 COMPOSE=(docker compose)
 if ! docker compose version >/dev/null 2>&1; then
@@ -100,30 +102,40 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
-# Ensure backend services are running (Ollama must be reachable from the TUI container).
-need_start=0
-if ! "${COMPOSE[@]}" ps --status running --services 2>/dev/null | grep -qx ollama; then
-  need_start=1
-elif ! "${COMPOSE[@]}" ps --format '{{.Service}} {{.Status}}' 2>/dev/null | grep -qE '^ollama .*healthy'; then
-  # Running but not healthy yet (or unmarked) — still try to bring stack up
-  need_start=1
-fi
-if [[ "$need_start" -eq 1 ]]; then
-  echo "Suite not running or Ollama unhealthy — starting with ./start-service.sh …"
-  ./start-service.sh
-fi
+if [[ "${LLM_PROVIDER:-ollama}" == "openai" ]]; then
+  # LM Studio runs on the host. The TUI container reaches it via host.docker.internal.
+  if ! "${COMPOSE[@]}" ps --status running --services 2>/dev/null | grep -qx app; then
+    echo "API is not running — starting with ./start-service.sh …"
+    ./start-service.sh
+  fi
+  tlc_lmstudio_discover
+  tlc_lmstudio_docker_url
+else
+  # Ensure backend services are running (Ollama must be reachable from the TUI container).
+  need_start=0
+  if ! "${COMPOSE[@]}" ps --status running --services 2>/dev/null | grep -qx ollama; then
+    need_start=1
+  elif ! "${COMPOSE[@]}" ps --format '{{.Service}} {{.Status}}' 2>/dev/null | grep -qE '^ollama .*healthy'; then
+    # Running but not healthy yet (or unmarked) — still try to bring stack up
+    need_start=1
+  fi
+  if [[ "$need_start" -eq 1 ]]; then
+    echo "Suite not running or Ollama unhealthy — starting with ./start-service.sh …"
+    ./start-service.sh
+  fi
 
-# Hard check: TUI talks to http://ollama:11434 — fail fast if DNS/connect breaks.
-if ! "${COMPOSE[@]}" exec -T ollama ollama list >/dev/null 2>&1; then
-  echo "error: Ollama is not responding. Try: ./start-service.sh && docker compose logs ollama" >&2
-  exit 1
-fi
-if ! "${COMPOSE[@]}" run --rm --no-deps app python -c \
-  "import urllib.request; urllib.request.urlopen('http://ollama:11434/api/tags', timeout=5).read()" \
-  >/dev/null 2>&1; then
-  echo "error: TUI container cannot reach http://ollama:11434 (name resolution / network)." >&2
-  echo "  Fix: ./start-service.sh   then retry ./cli.sh" >&2
-  exit 1
+  # Hard check: TUI talks to http://ollama:11434 — fail fast if DNS/connect breaks.
+  if ! "${COMPOSE[@]}" exec -T ollama ollama list >/dev/null 2>&1; then
+    echo "error: Ollama is not responding. Try: ./start-service.sh && docker compose logs ollama" >&2
+    exit 1
+  fi
+  if ! "${COMPOSE[@]}" run --rm --no-deps app python -c \
+    "import urllib.request; urllib.request.urlopen('http://ollama:11434/api/tags', timeout=5).read()" \
+    >/dev/null 2>&1; then
+    echo "error: TUI container cannot reach http://ollama:11434 (name resolution / network)." >&2
+    echo "  Fix: ./start-service.sh   then retry ./cli.sh" >&2
+    exit 1
+  fi
 fi
 
 RUN_ENV=()
@@ -140,7 +152,14 @@ if [[ -n "$AUTO_SKIP" || -n "$AUTO_FIX" ]]; then
   echo "  session: auto-skip=${AUTO_SKIP:-default}  auto-fix=${AUTO_FIX:-default}"
 fi
 echo "  toggle: /auto-skip on|off   /auto-fix on|off"
-echo "  ollama: ok (http://ollama:11434)"
+if [[ "${LLM_PROVIDER:-ollama}" == "openai" ]]; then
+  echo "  lmstudio: ok (${LLM_BASE_URL:-http://127.0.0.1:1234/v1})"
+  RUN_ENV+=(-e "LLM_PROVIDER=openai")
+  RUN_ENV+=(-e "LLM_BASE_URL=${LLM_BASE_URL_DOCKER}")
+  RUN_ENV+=(-e "MODEL_NAME=${MODEL_NAME}")
+else
+  echo "  ollama: ok (http://ollama:11434)"
+fi
 # Do not publish host ports — the long-running app service already owns :8000.
 # Never expand an empty array under `set -u` (bash 3.2 through 5.x).
 if ((${#RUN_ENV[@]})); then

@@ -9,9 +9,9 @@ usage() {
   cat <<EOF
 Usage: $0 [options]
 
-Starts TinyLocalCoder (ollama + app API on :8000).
-Always prompts for qwen2.5 or qwen3.5; the saved default is pre-selected
-(press Return to keep it). The choice is written to config.toml.
+Starts TinyLocalCoder (app API on :8000, plus Ollama unless the model is
+lmstudio). Always prompts for a catalog model; the saved default is
+pre-selected (press Return to keep it). The choice is written to config.toml.
 
 Options:
   --model KEY          Use this catalog key and save it (skip the picker)
@@ -65,7 +65,7 @@ while [[ $# -gt 0 ]]; do
     --model)
       MODEL_KEY="${2:-}"
       if [[ -z "$MODEL_KEY" ]]; then
-        echo "error: --model requires a catalog key (qwen2.5 | qwen3.5)" >&2
+        echo "error: --model requires a catalog key (qwen2.5 | qwen2.5-coder-3b | qwen2.5-coder-7b | qwen3.5 | devstral-small-2 | lmstudio)" >&2
         exit 1
       fi
       shift 2
@@ -133,47 +133,65 @@ elif [[ "$SELECT_MODEL" == "yes" ]]; then
   fi
 fi
 
-if [[ -n "$MEMORY_PROFILE" ]]; then
-  tlc_save_memory_profile "$MEMORY_PROFILE"
-  echo "Saved memory profile \"$MEMORY_PROFILE\" to .env"
-elif [[ "$SELECT_MODEL" == "yes" ]]; then
-  if [[ -t 0 || -r /dev/tty ]]; then
-    tlc_prompt_memory
-  fi
-fi
-
 # shellcheck source=scripts/compose-env.sh
 source "$ROOT/scripts/compose-env.sh"
 
-# The ctx picker prices each option from the model's kv_bytes_per_token, so it
-# has to run after compose-env; compose-env then re-runs to pick up the change.
-if [[ -n "$CTX_SIZE" ]]; then
-  tlc_save_ctx "$CTX_SIZE"
-  echo "Saved num_ctx = $CTX_SIZE to config.toml"
-elif [[ "$SELECT_MODEL" == "yes" ]]; then
-  if [[ -t 0 || -r /dev/tty ]]; then
-    tlc_prompt_ctx
+# Memory and context pickers size the Ollama container. LM Studio owns its
+# own process and context window, so those prompts do not apply.
+if [[ "${LLM_PROVIDER:-ollama}" != "openai" ]]; then
+  if [[ -n "$MEMORY_PROFILE" ]]; then
+    tlc_save_memory_profile "$MEMORY_PROFILE"
+    echo "Saved memory profile \"$MEMORY_PROFILE\" to .env"
+  elif [[ "$SELECT_MODEL" == "yes" ]]; then
+    if [[ -t 0 || -r /dev/tty ]]; then
+      tlc_prompt_memory
+    fi
   fi
+
+  # The ctx picker prices each option from the model's kv_bytes_per_token, so it
+  # has to run after compose-env; compose-env then re-runs to pick up the change.
+  if [[ -n "$CTX_SIZE" ]]; then
+    tlc_save_ctx "$CTX_SIZE"
+    echo "Saved num_ctx = $CTX_SIZE to config.toml"
+  elif [[ "$SELECT_MODEL" == "yes" ]]; then
+    if [[ -t 0 || -r /dev/tty ]]; then
+      tlc_prompt_ctx
+    fi
+  fi
+  source "$ROOT/scripts/compose-env.sh"
+elif [[ -n "$MEMORY_PROFILE" || -n "$CTX_SIZE" ]]; then
+  echo "LM Studio serves its own context; ignoring --memory and --ctx."
 fi
-source "$ROOT/scripts/compose-env.sh"
-
-echo "Model: $TLC_MODEL_KEY → $MODEL_NAME (num_ctx=$NUM_CTX)"
-
-# MIN_RAM_GB comes from compose-env, so the fit check runs after it.
-tlc_memory_summary
-tlc_warn_memory_cgroup
 
 # shellcheck source=scripts/probe-model.sh
 source "$ROOT/scripts/probe-model.sh"
-
 # shellcheck source=scripts/ensure-ollama-model.sh
 source "$ROOT/scripts/ensure-ollama-model.sh"
+# shellcheck source=scripts/lmstudio.sh
+source "$ROOT/scripts/lmstudio.sh"
 
-# Ensure the named Ollama model volume exists (preserves pulls across restarts).
-VOLUME_NAME="crew_pipeline_ollama_data"
-if ! docker volume inspect "$VOLUME_NAME" >/dev/null 2>&1; then
-  echo "Creating Docker volume $VOLUME_NAME"
-  docker volume create "$VOLUME_NAME" >/dev/null
+if [[ "${LLM_PROVIDER:-ollama}" == "openai" ]]; then
+  tlc_lmstudio_discover
+  tlc_lmstudio_docker_url
+  echo "Model: $TLC_MODEL_KEY → $MODEL_NAME (${LLM_BASE_URL:-http://127.0.0.1:1234/v1})"
+  if [[ "$PROBE" -eq 1 ]]; then
+    echo
+    tlc_probe_model
+  fi
+else
+  echo "Model: $TLC_MODEL_KEY → $MODEL_NAME (num_ctx=$NUM_CTX)"
+  # MIN_RAM_GB comes from compose-env, so the fit check runs after it.
+  tlc_memory_summary
+  tlc_warn_memory_cgroup
+fi
+
+if [[ "${LLM_PROVIDER:-ollama}" != "openai" ]]; then
+  # Ensure the named Ollama model volume exists (preserves pulls across restarts).
+  VOLUME_NAME="crew_pipeline_ollama_data"
+  if ! docker volume inspect "$VOLUME_NAME" >/dev/null 2>&1; then
+    echo "Creating Docker volume $VOLUME_NAME"
+    docker volume create "$VOLUME_NAME" >/dev/null
+  fi
 fi
 
 echo "Starting TinyLocalCoder…"
@@ -190,14 +208,15 @@ if [[ "$BUILD" -eq 1 ]]; then
   "${COMPOSE[@]}" build
 fi
 
-# Bring Ollama up first so we can check/pull the selected model before the app.
-echo "Starting Ollama…"
-"${COMPOSE[@]}" up -d ollama
-tlc_ensure_ollama_model
-
-if [[ "$PROBE" -eq 1 ]]; then
-  echo
-  tlc_probe_model
+if [[ "${LLM_PROVIDER:-ollama}" != "openai" ]]; then
+  # Bring Ollama up first so we can check/pull the selected model before the app.
+  echo "Starting Ollama…"
+  "${COMPOSE[@]}" up -d ollama
+  tlc_ensure_ollama_model
+  if [[ "$PROBE" -eq 1 ]]; then
+    echo
+    tlc_probe_model
+  fi
 fi
 
 if [[ "$DETACH" -eq 1 ]]; then
@@ -206,7 +225,11 @@ if [[ "$DETACH" -eq 1 ]]; then
   "${COMPOSE[@]}" ps
   echo
   echo "API:    http://localhost:8000/health"
-  echo "Ollama: http://localhost:11434"
+  if [[ "${LLM_PROVIDER:-ollama}" == "openai" ]]; then
+    echo "LM Studio: ${LLM_BASE_URL:-http://127.0.0.1:1234/v1}"
+  else
+    echo "Ollama: http://localhost:11434"
+  fi
   echo "TUI:    ./cli.sh"
   echo "Stop:   ./stop-service.sh"
 else

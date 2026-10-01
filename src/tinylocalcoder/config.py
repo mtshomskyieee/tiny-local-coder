@@ -15,6 +15,8 @@ class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 
     ollama_base_url: str = "http://127.0.0.1:11434"
+    llm_provider: str = Field(default_factory=lambda: load_model_choice().provider)
+    llm_base_url: str = Field(default_factory=lambda: load_model_choice().base_url)
     model_name: str = Field(default_factory=lambda: load_model_choice().ollama)
     num_ctx: int = Field(default_factory=lambda: load_model_choice().num_ctx)
     thinking_enabled: bool = True

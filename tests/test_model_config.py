@@ -60,6 +60,32 @@ def test_export_env(tmp_path: Path) -> None:
     assert "MODEL_NAME=qwen3.5:4b" in env
     assert "NUM_CTX=2048" in env
     assert "TLC_MODEL_KEY=qwen3.5" in env
+    assert "LLM_PROVIDER=ollama" in env
+
+
+OPENAI_SAMPLE = """\
+model = "lmstudio"
+
+[models."lmstudio"]
+provider = "openai"
+base_url = "http://127.0.0.1:1234/v1"
+url = "http://localhost:1234"
+num_ctx = 2048
+"""
+
+
+def test_export_openai_has_no_ollama_tag(tmp_path: Path) -> None:
+    path = tmp_path / "config.toml"
+    path.write_text(OPENAI_SAMPLE, encoding="utf-8")
+    spec = load_model_choice(path, required=True)
+    assert spec.provider == "openai"
+    assert spec.ollama == ""
+    assert spec.base_url == "http://127.0.0.1:1234/v1"
+    env = export_env(spec)
+    assert "LLM_PROVIDER=openai" in env
+    assert "LLM_BASE_URL=http://127.0.0.1:1234/v1" in env
+    assert "MODEL_NAME=\n" in env or env.startswith("MODEL_NAME=\n")
+    assert "qwen" not in env
 
 
 def test_iter_models(tmp_path: Path) -> None:
@@ -77,12 +103,34 @@ def test_cli_export(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
 def test_repo_config_catalog() -> None:
     repo_config = Path(__file__).resolve().parents[1] / "config.toml"
     keys = [m.key for m in iter_models(repo_config)]
-    assert keys == ["qwen2.5", "qwen3.5"]
+    assert keys == [
+        "qwen2.5",
+        "qwen2.5-coder-3b",
+        "qwen2.5-coder-7b",
+        "qwen3.5",
+        "devstral-small-2",
+        "lmstudio",
+    ]
     spec = load_model_choice(repo_config, required=True)
     assert spec.key in keys
-    assert spec.ollama in {"qwen2.5:3b", "qwen3.5:4b"}
+    assert spec.ollama in {
+        "qwen2.5:3b",
+        "qwen2.5-coder:3b",
+        "qwen2.5-coder:7b",
+        "qwen3.5:4b",
+        "devstral-small-2:24b",
+    }
     by_key = {m.key: m for m in iter_models(repo_config)}
+    assert by_key["qwen2.5-coder-3b"].ollama == "qwen2.5-coder:3b"
+    assert by_key["qwen2.5-coder-3b"].min_ram_gb >= 4
+    assert by_key["qwen2.5-coder-7b"].ollama == "qwen2.5-coder:7b"
+    assert by_key["qwen2.5-coder-7b"].min_ram_gb >= 8
     assert by_key["qwen3.5"].min_ram_gb >= 8
+    assert by_key["devstral-small-2"].ollama == "devstral-small-2:24b"
+    assert by_key["devstral-small-2"].min_ram_gb >= 20
+    assert by_key["lmstudio"].provider == "openai"
+    assert by_key["lmstudio"].base_url == "http://127.0.0.1:1234/v1"
+    assert by_key["lmstudio"].ollama == ""
 
 
 def test_format_llm_oom_error() -> None:

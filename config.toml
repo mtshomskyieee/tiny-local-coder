@@ -1,5 +1,5 @@
 # Tiny Local Coder — pick the model, then restart: ./start-service.sh
-# Options: qwen2.5 | qwen3.5
+# Options: qwen2.5 | qwen2.5-coder-3b | qwen2.5-coder-7b | qwen3.5 | devstral-small-2 | lmstudio
 model = "qwen2.5"
 
 # num_ctx below is the working context. 2048 is the safe floor, not a target:
@@ -33,6 +33,32 @@ max_ctx = 32768
 ctx_options = [2048, 4096, 8192, 10240, 16384, 20480, 32768]
 url = "https://ollama.com/library/qwen2.5:3b"
 
+[models."qwen2.5-coder-3b"]
+# https://ollama.com/library/qwen2.5-coder:3b  (~1.9 GB on disk)
+# Qwen/Qwen2.5-Coder-3B-Instruct config.json: same 36/2/128 layout as qwen2.5:3b,
+# so the cache line matches. Instruct, not a reasoning model.
+ollama = "qwen2.5-coder:3b"
+num_ctx = 32768
+min_ram_gb = 4
+# 36 layers x 2 KV heads x 128 head_dim x 2 (K+V) x 2 bytes
+kv_bytes_per_token = 36864
+max_ctx = 32768
+ctx_options = [2048, 4096, 8192, 10240, 16384, 20480, 32768]
+url = "https://ollama.com/library/qwen2.5-coder:3b"
+
+[models."qwen2.5-coder-7b"]
+# https://ollama.com/library/qwen2.5-coder:7b  (~4.7 GB on disk; needs ~8 GB Docker RAM to load)
+# Qwen/Qwen2.5-Coder-7B-Instruct config.json. Same 32768 window as the 3B,
+# but each token costs 56 KB instead of 36 KB.
+ollama = "qwen2.5-coder:7b"
+num_ctx = 32768
+min_ram_gb = 8
+# 28 layers x 4 KV heads x 128 head_dim x 2 (K+V) x 2 bytes = 56 KB/token
+kv_bytes_per_token = 57344
+max_ctx = 32768
+ctx_options = [2048, 4096, 8192, 10240, 16384, 20480, 32768]
+url = "https://ollama.com/library/qwen2.5-coder:7b"
+
 [models."qwen3.5"]
 # https://ollama.com/library/qwen3.5:4b  (~3.4GB on disk; needs ~8 GB Docker RAM to load)
 # Other local tags: qwen3.5:2b  qwen3.5:0.8b  qwen3.5:9b
@@ -48,3 +74,30 @@ max_ctx = 262144
 # bigger than a laptop. The picker prices each one rather than hiding them.
 ctx_options = [2048, 4096, 8192, 10240, 16384, 20480, 32768, 65536, 131072, 196608, 262144]
 url = "https://ollama.com/library/qwen3.5:4b"
+
+[models."devstral-small-2"]
+# https://ollama.com/library/devstral-small-2:24b  (~15 GB Q4_K_M; needs ~20 GB Docker RAM)
+# Mistral, not Qwen. mistralai/Devstral-Small-2-24B-Instruct-2512 text_config:
+# 40 layers, 8 KV heads, head_dim 128, no sliding window. YaRN in the GGUF
+# extends the trained window to 393216. Official library tag; Ollama 0.13.3+.
+# The laptop profile caps Ollama at 5 GB, which cannot hold these weights.
+ollama = "devstral-small-2:24b"
+num_ctx = 2048
+min_ram_gb = 20
+# 40 layers x 8 KV heads x 128 head_dim x 2 (K+V) x 2 bytes = 160 KB/token
+kv_bytes_per_token = 163840
+max_ctx = 393216
+# 384K of trained window, but 160 KB/token and 15 GB of weights: the picker
+# prices each step. 2048 is the working default, same reason as qwen3.5.
+ctx_options = [2048, 4096, 8192, 10240, 16384, 20480, 32768, 65536, 131072, 196608, 262144, 393216]
+url = "https://ollama.com/library/devstral-small-2:24b"
+
+# A server you already started. Nothing is pulled, and the Ollama container
+# stays down. Context length is whatever LM Studio is serving; num_ctx here
+# is unused by the client.
+[models."lmstudio"]
+provider = "openai"
+base_url = "http://127.0.0.1:1234/v1"
+url = "http://localhost:1234"
+min_ram_gb = 0
+num_ctx = 2048

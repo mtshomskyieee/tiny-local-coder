@@ -5,6 +5,7 @@ from __future__ import annotations
 import re
 from typing import Any, Sequence
 
+from langchain_core.language_models.chat_models import BaseChatModel
 from langchain_core.messages import BaseMessage
 from langchain_ollama import ChatOllama
 
@@ -69,8 +70,18 @@ def message_text(message: Any) -> str:
     return raw.strip()
 
 
-def get_llm(settings: Settings | None = None) -> ChatOllama:
+def get_llm(settings: Settings | None = None) -> BaseChatModel:
     s = settings or get_settings()
+    if s.llm_provider == "openai":
+        # LM Studio ignores the key. num_ctx stays in LM Studio's server settings.
+        from langchain_openai import ChatOpenAI
+
+        return ChatOpenAI(
+            model=s.model_name,
+            base_url=s.llm_base_url,
+            api_key="lm-studio",
+            temperature=s.temperature,
+        )
     # Always off: thinking models eat the entire 2048-token ctx and return
     # an empty `content` (plan.md becomes Goal: (none)). Settings.thinking_enabled
     # only gates the critic, not Ollama CoT.

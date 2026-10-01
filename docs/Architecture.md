@@ -183,17 +183,26 @@ cost is a property of the architecture: `kv_bytes_per_token` is
 `num_ctx x kv_bytes_per_token x parallel_slots`. For `qwen2.5:3b` that is
 36 KB per token — 72 MB at 2048, 360 MB at 10240.
 
-The two catalog models are not comparable here, and the difference is not the
+The catalog models are not comparable here, and the difference is not the
 one the window sizes suggest:
 
 | | trained window | KV per token | usable on an 11 GB host |
 |---|---|---|---|
 | `qwen2.5:3b` | 32,768 | 36 KB | the full 32k |
+| `qwen2.5-coder:3b` | 32,768 | 36 KB | the full 32k |
+| `qwen2.5-coder:7b` | 32,768 | 56 KB | the full 32k |
 | `qwen3.5:4b` | 262,144 | 128 KB | about 16k |
+| `devstral-small-2:24b` | 393,216 | 160 KB | does not load (15 GB weights) |
 
-qwen3.5 has 8x the window, but each token costs 3.5x as much cache and the
-weights are twice the size — so the bigger window is the one you can afford
-less of. Both figures come from the published `config.json`
+`qwen2.5-coder:3b` is the same 36-layer, 2-KV-head layout as `qwen2.5:3b`, so
+the cache line matches. The 7B coder keeps the 32,768 window but uses 28
+layers and 4 KV heads (56 KB/token). qwen3.5 has 8x the window, but each
+token costs 3.5x as much cache as the 3B and the weights are twice the size
+— so the bigger window is the one you can afford less of. Devstral Small 2
+is Mistral's 24B coder: 40 layers and 8 KV heads (160 KB/token), with YaRN
+in the GGUF taking the window to 393,216. The Q4_K_M weights are ~15 GB, so
+an 11 GB host cannot load them at any context. Figures come from
+each model's published `config.json`
 (`2 x layers x kv_heads x head_dim x 2 bytes`), not from estimates.
 
 Because the worthwhile sizes differ per model, the ladder is itself a catalog
