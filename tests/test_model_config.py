@@ -108,6 +108,7 @@ def test_repo_config_catalog() -> None:
         "qwen2.5-coder-3b",
         "qwen2.5-coder-7b",
         "qwen3.5",
+        "devstral-small-2",
         "lmstudio",
     ]
     spec = load_model_choice(repo_config, required=True)
@@ -117,6 +118,7 @@ def test_repo_config_catalog() -> None:
         "qwen2.5-coder:3b",
         "qwen2.5-coder:7b",
         "qwen3.5:4b",
+        "devstral-small-2:24b",
     }
     by_key = {m.key: m for m in iter_models(repo_config)}
     assert by_key["qwen2.5-coder-3b"].ollama == "qwen2.5-coder:3b"
@@ -124,6 +126,8 @@ def test_repo_config_catalog() -> None:
     assert by_key["qwen2.5-coder-7b"].ollama == "qwen2.5-coder:7b"
     assert by_key["qwen2.5-coder-7b"].min_ram_gb >= 8
     assert by_key["qwen3.5"].min_ram_gb >= 8
+    assert by_key["devstral-small-2"].ollama == "devstral-small-2:24b"
+    assert by_key["devstral-small-2"].min_ram_gb >= 20
     assert by_key["lmstudio"].provider == "openai"
     assert by_key["lmstudio"].base_url == "http://127.0.0.1:1234/v1"
     assert by_key["lmstudio"].ollama == ""

@@ -192,12 +192,16 @@ one the window sizes suggest:
 | `qwen2.5-coder:3b` | 32,768 | 36 KB | the full 32k |
 | `qwen2.5-coder:7b` | 32,768 | 56 KB | the full 32k |
 | `qwen3.5:4b` | 262,144 | 128 KB | about 16k |
+| `devstral-small-2:24b` | 393,216 | 160 KB | does not load (15 GB weights) |
 
 `qwen2.5-coder:3b` is the same 36-layer, 2-KV-head layout as `qwen2.5:3b`, so
 the cache line matches. The 7B coder keeps the 32,768 window but uses 28
 layers and 4 KV heads (56 KB/token). qwen3.5 has 8x the window, but each
 token costs 3.5x as much cache as the 3B and the weights are twice the size
-— so the bigger window is the one you can afford less of. Figures come from
+— so the bigger window is the one you can afford less of. Devstral Small 2
+is Mistral's 24B coder: 40 layers and 8 KV heads (160 KB/token), with YaRN
+in the GGUF taking the window to 393,216. The Q4_K_M weights are ~15 GB, so
+an 11 GB host cannot load them at any context. Figures come from
 each model's published `config.json`
 (`2 x layers x kv_heads x head_dim x 2 bytes`), not from estimates.
 

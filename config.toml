@@ -1,5 +1,5 @@
 # Tiny Local Coder — pick the model, then restart: ./start-service.sh
-# Options: qwen2.5 | qwen2.5-coder-3b | qwen2.5-coder-7b | qwen3.5 | lmstudio
+# Options: qwen2.5 | qwen2.5-coder-3b | qwen2.5-coder-7b | qwen3.5 | devstral-small-2 | lmstudio
 model = "qwen2.5"
 
 # num_ctx below is the working context. 2048 is the safe floor, not a target:
@@ -74,6 +74,23 @@ max_ctx = 262144
 # bigger than a laptop. The picker prices each one rather than hiding them.
 ctx_options = [2048, 4096, 8192, 10240, 16384, 20480, 32768, 65536, 131072, 196608, 262144]
 url = "https://ollama.com/library/qwen3.5:4b"
+
+[models."devstral-small-2"]
+# https://ollama.com/library/devstral-small-2:24b  (~15 GB Q4_K_M; needs ~20 GB Docker RAM)
+# Mistral, not Qwen. mistralai/Devstral-Small-2-24B-Instruct-2512 text_config:
+# 40 layers, 8 KV heads, head_dim 128, no sliding window. YaRN in the GGUF
+# extends the trained window to 393216. Official library tag; Ollama 0.13.3+.
+# The laptop profile caps Ollama at 5 GB, which cannot hold these weights.
+ollama = "devstral-small-2:24b"
+num_ctx = 2048
+min_ram_gb = 20
+# 40 layers x 8 KV heads x 128 head_dim x 2 (K+V) x 2 bytes = 160 KB/token
+kv_bytes_per_token = 163840
+max_ctx = 393216
+# 384K of trained window, but 160 KB/token and 15 GB of weights: the picker
+# prices each step. 2048 is the working default, same reason as qwen3.5.
+ctx_options = [2048, 4096, 8192, 10240, 16384, 20480, 32768, 65536, 131072, 196608, 262144, 393216]
+url = "https://ollama.com/library/devstral-small-2:24b"
 
 # A server you already started. Nothing is pulled, and the Ollama container
 # stays down. Context length is whatever LM Studio is serving; num_ctx here

@@ -689,7 +689,7 @@ class TinyLocalCoderTui(App[None]):
             log.write("Edit [cyan]config.toml[/] then restart the suite:")
             log.write(
                 '  [cyan]model = "qwen3.5"[/]   # or "qwen2.5", '
-                '"qwen2.5-coder-3b", "qwen2.5-coder-7b", or "lmstudio"'
+                '"qwen2.5-coder-3b", "qwen2.5-coder-7b", "devstral-small-2", or "lmstudio"'
             )
             log.write("  then [cyan]./start-service.sh[/]")
             log.write("[b]Catalog:[/b]")

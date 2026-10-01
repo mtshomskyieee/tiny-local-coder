@@ -1,7 +1,7 @@
 # Source after ROOT is set. Exports MODEL_NAME, NUM_CTX, TLC_MODEL_KEY,
 # LLM_PROVIDER, LLM_BASE_URL, MIN_RAM_GB, KV_BYTES_PER_TOKEN, MAX_CTX,
 # CTX_OPTIONS from the repo-root config.toml
-# (qwen2.5 | qwen2.5-coder-3b | qwen2.5-coder-7b | qwen3.5 | lmstudio).
+# (qwen2.5 | qwen2.5-coder-3b | qwen2.5-coder-7b | qwen3.5 | devstral-small-2 | lmstudio).
 # POSIX awk only — macOS /usr/bin/python3 is often too old for tomllib.
 if [[ -z "${ROOT:-}" ]]; then
   echo "error: ROOT must be set before sourcing scripts/compose-env.sh" >&2
