@@ -103,11 +103,26 @@ def test_cli_export(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
 def test_repo_config_catalog() -> None:
     repo_config = Path(__file__).resolve().parents[1] / "config.toml"
     keys = [m.key for m in iter_models(repo_config)]
-    assert keys == ["qwen2.5", "qwen3.5", "lmstudio"]
+    assert keys == [
+        "qwen2.5",
+        "qwen2.5-coder-3b",
+        "qwen2.5-coder-7b",
+        "qwen3.5",
+        "lmstudio",
+    ]
     spec = load_model_choice(repo_config, required=True)
     assert spec.key in keys
-    assert spec.ollama in {"qwen2.5:3b", "qwen3.5:4b"}
+    assert spec.ollama in {
+        "qwen2.5:3b",
+        "qwen2.5-coder:3b",
+        "qwen2.5-coder:7b",
+        "qwen3.5:4b",
+    }
     by_key = {m.key: m for m in iter_models(repo_config)}
+    assert by_key["qwen2.5-coder-3b"].ollama == "qwen2.5-coder:3b"
+    assert by_key["qwen2.5-coder-3b"].min_ram_gb >= 4
+    assert by_key["qwen2.5-coder-7b"].ollama == "qwen2.5-coder:7b"
+    assert by_key["qwen2.5-coder-7b"].min_ram_gb >= 8
     assert by_key["qwen3.5"].min_ram_gb >= 8
     assert by_key["lmstudio"].provider == "openai"
     assert by_key["lmstudio"].base_url == "http://127.0.0.1:1234/v1"

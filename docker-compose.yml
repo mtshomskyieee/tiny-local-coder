@@ -19,7 +19,7 @@ services:
     mem_limit: ${OLLAMA_MEM_LIMIT:-5g}
     memswap_limit: ${OLLAMA_MEM_LIMIT:-5g}
     environment:
-      # Resolved from config.toml (model = "qwen2.5" | "qwen3.5")
+      # Resolved from config.toml (model key → MODEL_NAME)
       - MODEL_NAME=${MODEL_NAME:-qwen2.5:3b}
       - OLLAMA_MAX_LOADED_MODELS=${OLLAMA_MAX_LOADED_MODELS:-1}
       - OLLAMA_NUM_PARALLEL=${OLLAMA_NUM_PARALLEL:-1}

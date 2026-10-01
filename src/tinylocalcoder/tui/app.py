@@ -687,7 +687,10 @@ class TinyLocalCoderTui(App[None]):
             shown = self.settings.model_name or choice.url
             log.write(f"[b]Current model:[/b] {choice.key} → {shown}")
             log.write("Edit [cyan]config.toml[/] then restart the suite:")
-            log.write('  [cyan]model = "qwen3.5"[/]   # or "qwen2.5" or "lmstudio"')
+            log.write(
+                '  [cyan]model = "qwen3.5"[/]   # or "qwen2.5", '
+                '"qwen2.5-coder-3b", "qwen2.5-coder-7b", or "lmstudio"'
+            )
             log.write("  then [cyan]./start-service.sh[/]")
             log.write("[b]Catalog:[/b]")
             for spec in iter_models():

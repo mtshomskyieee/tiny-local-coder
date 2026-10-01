@@ -65,7 +65,7 @@ while [[ $# -gt 0 ]]; do
     --model)
       MODEL_KEY="${2:-}"
       if [[ -z "$MODEL_KEY" ]]; then
-        echo "error: --model requires a catalog key (qwen2.5 | qwen3.5 | lmstudio)" >&2
+        echo "error: --model requires a catalog key (qwen2.5 | qwen2.5-coder-3b | qwen2.5-coder-7b | qwen3.5 | lmstudio)" >&2
         exit 1
       fi
       shift 2
