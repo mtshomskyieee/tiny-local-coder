@@ -141,4 +141,4 @@ def test_installed_packages_are_recorded_for_the_next_image_build(
     text = (memory.root / RECORD_FILE).read_text(encoding="utf-8")
     packages = text.split()
     assert packages.count("make") == 1
-    assert {"g++", "gcc", "make"} <= set(packages)
+    assert {"g++", "gcc", "libc6-dev", "make"} <= set(packages)

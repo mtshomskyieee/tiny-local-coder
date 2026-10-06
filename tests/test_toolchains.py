@@ -98,6 +98,8 @@ def test_cpp_compile_prefers_make_when_a_makefile_was_created() -> None:
         "g++ -Wall -std=c++17 -o square_root src/square_root.cpp"
     )
     assert cpp.smoke_cmd(["src/square_root.cpp"]) == "./square_root"
+    assert cpp.dry_run_cmd(["src/square_root.cpp"]) == "./square_root --dry-run"
+    assert TOOLCHAINS["python"].dry_run_cmd(["app.py"]) == "python3 app.py --dry-run"
 
 
 def test_install_command_dedupes_packages() -> None:

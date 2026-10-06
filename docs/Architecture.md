@@ -67,7 +67,7 @@ flowchart LR
 | `/review` | Tool writes `manifest.txt` first, `/plan` from that list, tool writes per-file `review.md` | `/execute-plan` |
 | `/review-fix` | Parse `review.md` findings, `/plan` refine/fix todos (skip execute if none) | `/execute-plan` |
 | `/fix-plan` | Compare requirement vs `plan.md` + workspace gaps, rewrite todos | *(stop — user runs `/execute-plan`)* |
-| `/test` | Invent a **runnable test plan** as `plan.md` (find/run tests, or add a tiny smoke test) | `/execute-plan` |
+| `/test` | Ask the model, given the live source and test file names, for one new test file (or none, if tests exist) and one run command in that same language. A reply that edits an existing program file is rejected and asked once more. | `/execute-plan` |
 | `/soup-to-nuts` | One allow-all consent, then `/plan` → `/execute-plan` → `/review` → `/review-fix` → `/test` | *(compound of existing workflows)* |
 
 Optional trailing text is appended to the fixed prompt (`/review focus on src/`, `/review-fix only high`, `/fix-plan start_service.sh`, `/test only unit`). `/soup-to-nuts <requirement>` uses the trailing text as the product `/plan` prompt; nested review/test stages get no extra note.
@@ -116,8 +116,8 @@ After `/plan`, [`finalize_plan()`](../src/tinylocalcoder/memory/files.py) always
 3. **Drops junk run targets** — anything whose first token is not a registered tool (`python3`, `pytest`, `make`, `g++`, `cargo`, `apt-get`, `./…`, `PYTHONPATH=…`), e.g. bare `Define`
 4. **Rewrites bad FastAPI verifies**: `from db import db; db.selectall()` → one short `from db import app; … routes …` check
 5. **Caps runs**: at most one open provision, one open compile and one open behavioral run, in that order
-6. **Augments** if still missing compile/smoke, using the registry's builders for whatever language the creates are in — `make` or `g++ -Wall -std=c++17 -o …` then `./binary` for C++, `py_compile` then `python3 -c "import …"` for Python
-7. **Prepends an install step** when a needed toolchain's probe binary is absent (`apt-get install -y g++ make`)
+6. **Augments** if still missing compile/smoke, using the registry's builders for whatever language the creates are in — `make` or `g++ -Wall -std=c++17 -o …` then `./binary --dry-run` for C++, `py_compile` then `python3 app.py --dry-run && python3 -c "import app"` for Python. The entrypoint create line is stamped so the file accepts `--dry-run` (print the action, exit 0, no side effects). A Python import smoke stays on that same run; it is not replaced by the flag. A specific check already in the plan (pytest, a non-generic command) stays as the second segment of that one behavioral run. FastAPI keeps its route-listing verify and does not gain a second run.
+7. **Prepends an install step** when a needed toolchain's probe binary is absent (`apt-get install -y g++ make`). `python3-pytest` is added only when the plan creates a `.py` file, an open run actually invokes pytest, and `pytest` is not on PATH. A C++ plan never gets that package, and it is not appended to a `g++`/`make` line.
 
 `PLAN_SYSTEM` steers the same shape. Its example block is chosen per language
 from the registry and *swapped in*, not added to — at 2048 ctx there is no room
@@ -129,6 +129,7 @@ Good archive example: [`workspace/archive/beer-api/plan.md`](../workspace/archiv
 ## Meta-command hygiene
 
 - TUI meta commands need a leading `/`. Bare input like `reset-todo 8` is treated as meta and **not** sent to the plan agent.
+- `/compaction` copies the current `plan.md` onto `session.md`, folds completed `[x]` todos into the `Done:` line, and keeps Goal, notes, open `[ ]` todos, and skipped `[!]` todos. It does not re-run `finalize_plan`.
 - Words that are also freeform English (`plan`, `review`, `review-fix`, `test`, …) only act as commands when prefixed with `/`.
 - Plan normalize / `is_meta_todo_target` drops leaked meta lines and follow-on `reset_todo_*.py` invents.
 
@@ -140,7 +141,7 @@ On a failed run step during `/execute-plan`:
 
 0. **Classify** the failure (`classify_failure`): *junk* (prose, not a command) / *environment* (a registered build tool is absent) / *code*
 1. **Junk command** → skip immediately (no LLM fix, **does not** consume replan budget)
-1b. **Environment** → `apt-get` the toolchain through the approval gate and retry the step (`AUTO_INSTALL=true`). A missing `./binary` is deliberately *not* an environment failure — it means the build never produced it
+1b. **Environment** → `apt-get` the toolchain through the approval gate and retry the step (`AUTO_INSTALL=true`). This runs even when `AUTO_FIX` is off: a missing `gcc` is not a code patch. A missing `./binary` is deliberately *not* an environment failure — it means the build never produced it
 2. **Auto-fix once** (`AUTO_FIX_MAX=1`) — heuristics + optional CREATE/WRITE, then retry
 3. If still failing and **plan smell** → **auto-replan once** (`AUTO_REPLAN=true`):
    - Collapse completed work into a one-line `Done:` narrative (not numbered `[x]` spam)

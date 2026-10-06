@@ -14,10 +14,20 @@ from tinylocalcoder.toolchains import (
     all_run_prefixes,
     all_source_extensions,
     all_source_filenames,
+    append_apt_package,
+    command_invokes_pytest,
     detect_toolchains,
+    dry_run_command,
     install_command,
     is_compile_command,
+    is_generic_smoke,
     is_provision_command,
+    is_python_provision_command,
+    plan_entrypoint,
+    plan_has_python_source,
+    pytest_install_command,
+    pytest_is_missing,
+    PYTEST_PACKAGE,
 )
 
 
@@ -95,8 +105,154 @@ META_TODO_NAMES = frozenset(
         "execute-plan",
         "exec-plan",
         "run-plan",
+        "compaction",
     }
 )
+
+
+_DRY_RUN_CLAUSE = "supports --dry-run: print the action and exit 0 with no side effects"
+_FASTAPI_DRY_RUN_CLAUSE = "supports --dry-run: print route paths and exit 0 with no side effects"
+
+
+def _stamp_dry_run(todo: TodoStep, entry: str, clause: str) -> TodoStep:
+    """Note the flag on the entrypoint create/refine line. Other todos stay put."""
+    if todo.action not in {"create", "write", "refine"}:
+        return todo
+    if strip_placeholder_path(todo.target) != entry:
+        return todo
+    desc = (todo.description or "").strip()
+    if "--dry-run" in desc:
+        return todo
+    description = f"{desc} — {clause}" if desc else clause
+    return TodoStep(
+        number=todo.number,
+        action=todo.action,
+        target=todo.target,
+        description=description,
+        done=todo.done,
+        raw_line=todo.raw_line,
+        skipped=todo.skipped,
+    )
+
+
+def _open_behaviors(todos: list[TodoStep]) -> list[TodoStep]:
+    return [
+        t
+        for t in todos
+        if t.action in {"run", "test"}
+        and not t.done
+        and not is_compile_command(t.target or "")
+        and not is_provision_command(t.target or "")
+    ]
+
+
+def _is_python_import_smoke(command: str) -> bool:
+    """`python3 -c "import mod"` — the import check a Python plan must keep."""
+    return "python" in (command or "") and is_generic_smoke(command)
+
+
+def _apply_open_dry_run(
+    todos: list[TodoStep], dry: str | None, import_smoke: str | None = None
+) -> None:
+    """Make the one open behavioral run exercise --dry-run.
+
+    A bare `./binary` smoke is replaced by `<entry> --dry-run`. A Python
+    `python3 -c "import …"` smoke stays on that same run, after the flag, so
+    the plan still proves the module imports. A specific check (pytest, a
+    numeric expect) keeps its command as the second segment.
+    """
+    if not dry:
+        return
+    behaviors = _open_behaviors(todos)
+    if not behaviors:
+        return
+    step = behaviors[0]
+    target = (step.target or "").strip()
+    if "--dry-run" in target:
+        # The model often copies the dry-run example and drops the import.
+        if (
+            import_smoke
+            and "python3 -c" not in target
+            and "python -c" not in target
+            and target == dry
+        ):
+            step.target = f"{dry} && {import_smoke}"
+        return
+    if is_generic_smoke(target) and _is_python_import_smoke(target):
+        step.target = f"{dry} && {target}"
+        return
+    if is_generic_smoke(target):
+        step.target = dry
+        return
+    step.target = f"{dry} && {target}"
+
+
+def _chain_dry_run_unless_routes(todos: list[TodoStep], dry: str | None) -> None:
+    """FastAPI keeps its route-listing verify as the sole behavioral run."""
+    behaviors = _open_behaviors(todos)
+    if behaviors and "app.routes" in (behaviors[0].target or ""):
+        return
+    _apply_open_dry_run(todos, dry)
+
+
+def _ensure_pytest_install(todos: list[TodoStep], created_paths: list[str]) -> None:
+    """Apt-install python3-pytest only for a Python plan that runs pytest and lacks it.
+
+    A C++ plan never gets this package, and it is never appended to a g++/make line.
+    """
+    open_pytest = [
+        t
+        for t in todos
+        if t.action in {"run", "test"}
+        and not t.done
+        and command_invokes_pytest(t.target or "")
+    ]
+    if not open_pytest or not plan_has_python_source(created_paths) or not pytest_is_missing():
+        return
+    for step in todos:
+        if (
+            step.action in {"run", "test"}
+            and not step.done
+            and is_python_provision_command(step.target or "")
+        ):
+            step.target = append_apt_package(step.target, PYTEST_PACKAGE)
+            return
+    install = pytest_install_command()
+    insert_at = len(todos)
+    for i, step in enumerate(todos):
+        if step.action in {"run", "test"} and not is_provision_command(step.target or ""):
+            insert_at = i
+            break
+    number = (max((t.number for t in todos), default=0) + 1) if todos else 1
+    todos.insert(
+        insert_at,
+        TodoStep(
+            number=number,
+            action="run",
+            target=install,
+            description="expect success",
+            done=False,
+            raw_line="",
+        ),
+    )
+
+
+def _order_plan_runs(todos: list[TodoStep]) -> list[TodoStep]:
+    """Creates, then provision, compile, behavior — install before the run that needs it."""
+    creates: list[TodoStep] = []
+    provision: list[TodoStep] = []
+    compile_runs: list[TodoStep] = []
+    behavior: list[TodoStep] = []
+    for step in todos:
+        if step.action not in {"run", "test"}:
+            creates.append(step)
+        elif is_provision_command(step.target or ""):
+            provision.append(step)
+        elif is_compile_command(step.target or ""):
+            compile_runs.append(step)
+        else:
+            behavior.append(step)
+    return creates + provision + compile_runs + behavior
 
 
 def meta_command_name(text: str) -> str | None:
@@ -1163,15 +1319,16 @@ class WorkspaceMemory:
         """Sanitize, then append the missing provision / compile / smoke runs.
 
         Which commands those are comes entirely from the toolchain registry, so
-        a C++ plan gets `g++ …` + `./binary` exactly the way a Python plan gets
-        `py_compile` + `python3 -c "import …"`. Without this a non-Python plan
-        finished with no verify step at all.
+        a C++ plan gets `g++ …` + `./binary --dry-run` exactly the way a Python
+        plan gets `py_compile` + `python3 app.py --dry-run`. Without this a
+        non-Python plan finished with no verify step at all.
         """
         cleaned = self.sanitize_plan_todos(todos, goal=goal)
         creates = [t for t in cleaned if t.action in {"create", "write", "refine"}]
         runs = [t for t in cleaned if t.action in {"run", "test"}]
         created_paths = [t.target for t in creates]
         fastapi = looks_fastapi_goal(goal, cleaned)
+        entry = plan_entrypoint(created_paths)
 
         has_compile = any(is_compile_command(t.target or "") for t in runs)
         has_provision = any(is_provision_command(t.target or "") for t in runs)
@@ -1182,6 +1339,9 @@ class WorkspaceMemory:
         )
 
         out = list(cleaned)
+        if entry:
+            clause = _FASTAPI_DRY_RUN_CLAUSE if fastapi else _DRY_RUN_CLAUSE
+            out = [_stamp_dry_run(t, entry, clause) for t in out]
         next_num = (max((t.number for t in out), default=0) + 1) if out else 1
 
         def _append(target: str) -> None:
@@ -1199,6 +1359,7 @@ class WorkspaceMemory:
             next_num += 1
 
         needed = detect_toolchains(created_paths, [t.target for t in runs])
+        dry = dry_run_command(entry) if entry else None
 
         # FastAPI keeps its bespoke route-listing smoke run; the registry's
         # generic `import mod` check is not a useful verify for a web app.
@@ -1221,7 +1382,9 @@ class WorkspaceMemory:
                 if parent not in {".", ""}:
                     cmd = f"PYTHONPATH={parent} " + cmd
                 _append(cmd)
-            return self.cap_todos(self.dedupe_todos(out))
+            _chain_dry_run_unless_routes(out, dry)
+            _ensure_pytest_install(out, created_paths)
+            return self.cap_todos(self.dedupe_todos(_order_plan_runs(out)))
 
         compile_cmds: list[str] = []
         smoke_cmds: list[str] = []
@@ -1239,7 +1402,7 @@ class WorkspaceMemory:
                     smoke_cmds.append(cmd)
 
         # Install anything the build will need but the container lacks, first.
-        if not has_provision and (compile_cmds or smoke_cmds):
+        if not has_provision and (compile_cmds or smoke_cmds or dry):
             missing = [tc for tc in needed if tc.missing_probes()]
             install = install_command(missing)
             if install:
@@ -1247,10 +1410,20 @@ class WorkspaceMemory:
 
         if compile_cmds and not has_compile:
             _append(compile_cmds[0])
-        if smoke_cmds and not has_behavior:
-            _append(smoke_cmds[0])
+        import_smoke = next(
+            (c for c in smoke_cmds if _is_python_import_smoke(c)), None
+        )
+        if not has_behavior:
+            if dry and import_smoke:
+                _append(f"{dry} && {import_smoke}")
+            elif dry:
+                _append(dry)
+            elif smoke_cmds:
+                _append(smoke_cmds[0])
 
-        return self.cap_todos(self.dedupe_todos(out))
+        _apply_open_dry_run(out, dry, import_smoke)
+        _ensure_pytest_install(out, created_paths)
+        return self.cap_todos(self.dedupe_todos(_order_plan_runs(out)))
 
     def render_finalized_plan(self, text: str | None = None) -> str:
         """Normalize, strip meta/junk, dedupe/cap, rewrite bad verifies — no write."""
@@ -1275,6 +1448,41 @@ class WorkspaceMemory:
     def finalize_plan(self, text: str | None = None) -> str:
         """Normalize, strip meta/junk, dedupe/cap, rewrite bad verifies, write plan.md."""
         final = self.render_finalized_plan(text)
+        self.write_plan(final)
+        return final
+
+    def compact_plan(self) -> str | None:
+        """Fold completed todos into Done: and keep the full plan in session.md.
+
+        Returns the rewritten plan, or None when nothing is completed. Does not
+        call finalize_plan — that would re-augment and grow the plan again.
+        Open and skipped todos stay so the session can continue.
+        """
+        text = self.read_plan()
+        todos = self.parse_todos()
+        completed = [t for t in todos if t.done and not t.skipped]
+        if not completed:
+            return None
+        self.append_session("compaction", text.strip())
+        goal = self.plan_goal_from_text(text) or "(see todos)"
+        existing = self.plan_done_from_text(text).strip()
+        fresh = self.build_done_summary(todos).strip()
+        if not existing:
+            done = fresh
+        elif not fresh or fresh in existing:
+            done = existing
+        elif existing in fresh:
+            done = fresh
+        else:
+            done = f"{existing}, {fresh}"
+        kept = [t for t in todos if not t.done or t.skipped]
+        final = self._rewrite_plan_from_todos(
+            goal,
+            kept,
+            strip_meta=True,
+            done_summary=done,
+            extra_section=self.plan_extra_from_text(text),
+        )
         self.write_plan(final)
         return final
 

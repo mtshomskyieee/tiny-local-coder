@@ -54,7 +54,46 @@ def build_plan_system(prompt: str) -> str:
     return PLAN_SYSTEM.format(example=toolchain.plan_example, extra=extra)
 
 
+# Lead line workflows uses so this call does not inherit the product-plan example.
+TEST_GUIDANCE_LEAD = "Choose how to test the files listed below."
+
+TEST_GUIDANCE_SYSTEM = """You choose how to test the files you are shown.
+Reply with exactly two lines and no other text:
+CREATE: <a new test file path, or - if a test file is already listed>
+RUN: <one short command that runs those tests and exits>
+
+Rules:
+- Use the same language as the source files. Do not switch languages.
+- CREATE must be a new file. Never name a source file that already exists.
+- If test files are already listed, CREATE is - and RUN executes those files.
+- RUN is one command. No servers. No installers. No meta commands.
+"""
+
+
+def _plain_model_text(result: object) -> str:
+    text = message_text(result).strip()
+    if text.startswith("```"):
+        lines = text.splitlines()
+        if lines and lines[0].startswith("```"):
+            lines = lines[1:]
+        if lines and lines[-1].strip() == "```":
+            lines = lines[:-1]
+        text = "\n".join(lines).strip()
+    return text
+
+
 def run_plan_agent(memory: WorkspaceMemory, prompt: str) -> str:
+    # Test guidance is a two-line answer, not a product plan. Skipping
+    # finalize_plan keeps a dry-run stamp or a language example off this step.
+    if (prompt or "").lstrip().startswith(TEST_GUIDANCE_LEAD):
+        result = invoke_llm(
+            [
+                SystemMessage(content=TEST_GUIDANCE_SYSTEM),
+                HumanMessage(content=prompt),
+            ]
+        )
+        return _plain_model_text(result)
+
     current = memory.read_plan()
     # Only a tiny slice of the existing plan — not the whole history dump
     brief = current[:800]
@@ -69,14 +108,7 @@ def run_plan_agent(memory: WorkspaceMemory, prompt: str) -> str:
         ),
     ]
     result = invoke_llm(messages)
-    text = message_text(result)
-    if text.startswith("```"):
-        lines = text.splitlines()
-        if lines[0].startswith("```"):
-            lines = lines[1:]
-        if lines and lines[-1].strip() == "```":
-            lines = lines[:-1]
-        text = "\n".join(lines).strip()
+    text = _plain_model_text(result)
     if not text:
         raise RuntimeError(
             "The model returned an empty plan (no todos). "

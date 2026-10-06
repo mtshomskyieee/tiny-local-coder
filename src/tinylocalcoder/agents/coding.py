@@ -12,6 +12,8 @@ from tinylocalcoder.memory.files import TodoStep, WorkspaceMemory
 from tinylocalcoder.toolchains import (
     all_source_extensions,
     all_source_filenames,
+    is_build_filename,
+    is_test_path,
     toolchain_for_path,
 )
 from tinylocalcoder.tools.manifest import fulfill_manifest_todo, is_manifest_todo
@@ -134,6 +136,17 @@ def _language_note(path: str) -> str:
     return f"Write {label}.\n" if label else ""
 
 
+def _coding_system(path: str, step_ctx: str, *, refine: bool) -> str:
+    """System prompt for one file. Names --dry-run only when this step requires it."""
+    base = CODE_REFINE_SYSTEM if refine else CODE_CREATE_SYSTEM
+    note = _language_note(path)
+    if "--dry-run" in (step_ctx or ""):
+        note += (
+            "Accept --dry-run: print the action, exit 0, and do not perform the action.\n"
+        )
+    return base + note
+
+
 def pending_file_paths(memory: WorkspaceMemory) -> list[str]:
     return [
         t.target
@@ -162,6 +175,36 @@ def _show_file(memory: WorkspaceMemory, path: str) -> dict:
     }
 
 
+def source_slice_for_test(memory: WorkspaceMemory, path: str) -> str:
+    """First lines of the program files, when this step is creating a test file.
+
+    The slice is raw text. The language is whatever those files already are.
+    """
+    if not is_test_path(path):
+        return ""
+    chunks: list[str] = []
+    for rel in memory.list_files():
+        norm = rel.replace("\\", "/")
+        if is_test_path(norm) or is_build_filename(norm) or norm.endswith("__init__.py"):
+            continue
+        if toolchain_for_path(norm) is None:
+            continue
+        text = memory.read_prototype(norm)
+        lines = [ln for ln in text.splitlines() if ln.strip()][:20]
+        if not lines:
+            continue
+        chunks.append(f"--- {norm} ---\n" + "\n".join(lines))
+        if len(chunks) >= 2:
+            break
+    if not chunks:
+        return ""
+    return (
+        "Source under test (do not modify these files):\n"
+        + "\n\n".join(chunks)
+        + "\n"
+    )
+
+
 def _write_one_file(
     memory: WorkspaceMemory,
     path: str,
@@ -175,13 +218,15 @@ def _write_one_file(
         existing = existing[:4000] + "\n# …truncated…"
     # The model only sees the todo line, so name the language explicitly rather
     # than making it infer one from the filename.
-    lang = _language_note(path)
+    system = _coding_system(path, step_ctx, refine=bool(refine or existing))
+    source_note = source_slice_for_test(memory, path)
     if refine or existing:
         messages = [
-            SystemMessage(content=CODE_REFINE_SYSTEM + lang),
+            SystemMessage(content=system),
             HumanMessage(
                 content=(
                     f"{step_ctx}\n"
+                    f"{source_note}"
                     f"File to update: `{path}`\n"
                     f"User request: {prompt or '(follow the step)'}\n\n"
                     f"Current file contents:\n{existing or '(empty)'}\n"
@@ -190,10 +235,11 @@ def _write_one_file(
         ]
     else:
         messages = [
-            SystemMessage(content=CODE_CREATE_SYSTEM + lang),
+            SystemMessage(content=system),
             HumanMessage(
                 content=(
                     f"{step_ctx}\n"
+                    f"{source_note}"
                     f"User request: {prompt or '(none)'}\n"
                     f"Write the complete file `{path}` now."
                 )

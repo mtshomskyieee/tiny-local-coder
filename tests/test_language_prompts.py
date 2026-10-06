@@ -9,7 +9,13 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from tinylocalcoder.agents.coding import _language_note, _paths_for_todo
+from tinylocalcoder.agents.coding import (
+    _coding_system,
+    _language_note,
+    _paths_for_todo,
+    source_slice_for_test,
+)
+from tinylocalcoder.agents.thinking import TEST_GUIDANCE_SYSTEM
 from tinylocalcoder.agents.replan import _fallback_verify_todo
 from tinylocalcoder.agents.thinking import build_plan_system
 from tinylocalcoder.agents.workflows import _list_workspace_tests
@@ -39,6 +45,7 @@ class TestPlanPrompt:
     def test_python_request_is_unchanged(self) -> None:
         text = build_plan_system("a FastAPI beer endpoint")
         assert "python3 -m py_compile" in text
+        assert 'python3 app.py --dry-run && python3 -c "import app"' in text
         assert "PYTHONPATH" in text
         assert "app.routes" in text
 
@@ -59,6 +66,31 @@ class TestCodingAgent:
         assert _paths_for_todo(_todo("Makefile")) == ["Makefile"]
         assert _paths_for_todo(_todo("hello.c")) == ["hello.c"]
         assert _paths_for_todo(_todo("app.py")) == ["app.py"]
+
+    def test_test_guidance_names_no_language_or_runner(self) -> None:
+        lowered = TEST_GUIDANCE_SYSTEM.lower()
+        for word in ("python", "pytest", "unittest", "cargo", "javac", "npm"):
+            assert word not in lowered
+
+    def test_test_file_step_sees_the_source_slice(self, memory: WorkspaceMemory) -> None:
+        (memory.root / "calculator.py").write_text(
+            "def rpn(expr):\n    return 1\n",
+            encoding="utf-8",
+        )
+        note = source_slice_for_test(memory, "tests/test_calculator.py")
+        assert "calculator.py" in note
+        assert "def rpn" in note
+        assert source_slice_for_test(memory, "calculator.py") == ""
+
+    def test_dry_run_sentence_is_added_only_when_the_step_mentions_it(self) -> None:
+        plain = _coding_system("app.py", "1. [ ] create `app.py` — does a thing", refine=False)
+        assert "Accept --dry-run" not in plain
+        noted = _coding_system(
+            "app.py",
+            "1. [ ] create `app.py` — supports --dry-run: print the action and exit 0",
+            refine=False,
+        )
+        assert "Accept --dry-run: print the action, exit 0" in noted
 
     def test_language_note_names_the_language(self) -> None:
         assert _language_note("a.cpp") == "Write C++.\n"
