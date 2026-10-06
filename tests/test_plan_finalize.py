@@ -39,6 +39,7 @@ def _todo(action: str, target: str, desc: str = "", *, done: bool = False,
 
 
 def test_meta_command_name_accepts_slash_and_bare() -> None:
+    assert meta_command_name("/compaction") == "compaction"
     assert meta_command_name("/reset-todo 8") == "reset-todo"
     assert meta_command_name("REVIEW") == "review"
     assert meta_command_name("/review-fix") == "review-fix"
@@ -408,7 +409,7 @@ class TestLanguageAwarePlans:
             "2. [ ] create `Makefile` — builds square_root\n"
         )
         assert "run `make` — expect success" in final
-        assert "run `./square_root` — expect success" in final
+        assert "run `./square_root --dry-run` — expect success" in final
 
     def test_cpp_plan_without_makefile_compiles_directly(
         self, memory: WorkspaceMemory
@@ -418,7 +419,7 @@ class TestLanguageAwarePlans:
             "## Todos\n1. [ ] create `square_root.cpp` — sqrt of argv\n"
         )
         assert "g++ -Wall -std=c++17 -o square_root square_root.cpp" in final
-        assert "run `./square_root`" in final
+        assert "run `./square_root --dry-run`" in final
 
     def test_existing_build_step_is_kept_not_duplicated(
         self, memory: WorkspaceMemory
@@ -438,7 +439,8 @@ class TestLanguageAwarePlans:
             "## Todos\n1. [ ] create `app.py` — does a thing\n"
         )
         assert "python3 -m py_compile app.py" in final
-        assert 'python3 -c "import app"' in final
+        assert "python3 app.py --dry-run && python3 -c \"import app\"" in final
+        assert "--dry-run" in final.split("create `app.py`", 1)[1].split("\n", 1)[0]
 
     def test_fastapi_plans_keep_the_route_listing_verify(
         self, memory: WorkspaceMemory
@@ -490,3 +492,164 @@ class TestLanguageAwarePlans:
             ]
         )
         assert any("missing compile step for created cpp" in i for i in issues)
+
+
+def _which_pytest(present: bool):
+    import tinylocalcoder.toolchains as toolchains
+
+    real = toolchains.shutil.which
+
+    def which(name: str):
+        if name == "pytest":
+            return "/usr/bin/pytest" if present else None
+        return real(name)
+
+    return toolchains, which
+
+
+def test_pytest_install_when_a_python_plan_lacks_pytest(memory: WorkspaceMemory, monkeypatch) -> None:
+    toolchains, which = _which_pytest(False)
+    monkeypatch.setattr(toolchains.shutil, "which", which)
+    final = memory.render_finalized_plan(
+        "# Plan\nGoal: test the app\n\n## Todos\n"
+        "1. [ ] create `app.py` — cli\n"
+        "2. [ ] run `python3 -m pytest tests/test_app.py -q` — expect success\n"
+    )
+    assert "python3-pytest" in final
+    assert "g++" not in final
+    lines = final.splitlines()
+    apt_at = next(i for i, ln in enumerate(lines) if "python3-pytest" in ln)
+    pytest_at = next(i for i, ln in enumerate(lines) if "-m pytest" in ln)
+    assert apt_at < pytest_at
+    assert "python3 app.py --dry-run && python3 -m pytest tests/test_app.py -q" in final
+
+
+def test_pytest_package_merges_into_an_existing_python_apt_line(
+    memory: WorkspaceMemory, monkeypatch
+) -> None:
+    toolchains, which = _which_pytest(False)
+    monkeypatch.setattr(toolchains.shutil, "which", which)
+    final = memory.render_finalized_plan(
+        "# Plan\nGoal: test the app\n\n## Todos\n"
+        "1. [ ] create `app.py` — cli\n"
+        "2. [ ] run `apt-get update && apt-get install -y --no-install-recommends python3`"
+        " — expect success\n"
+        "3. [ ] run `pytest -q` — expect success\n"
+    )
+    apt_lines = [ln for ln in final.splitlines() if "apt-get" in ln]
+    assert len(apt_lines) == 1
+    assert "python3-pytest" in apt_lines[0]
+    assert "g++" not in apt_lines[0]
+
+
+def test_cpp_plan_does_not_install_pytest(memory: WorkspaceMemory, monkeypatch) -> None:
+    toolchains, which = _which_pytest(False)
+    monkeypatch.setattr(toolchains.shutil, "which", which)
+    final = memory.render_finalized_plan(
+        "# Plan\nGoal: C++ square root.\n\n## Todos\n"
+        "1. [ ] create `square_root.cpp` — sqrt of argv\n"
+        "2. [ ] run `python3 -m pytest` — expect success\n"
+    )
+    assert "python3-pytest" not in final
+    assert "./square_root --dry-run" in final
+
+
+def test_no_pytest_install_without_a_pytest_run(memory: WorkspaceMemory, monkeypatch) -> None:
+    toolchains, which = _which_pytest(False)
+    monkeypatch.setattr(toolchains.shutil, "which", which)
+    final = memory.render_finalized_plan(
+        "# Plan\nGoal: a small module.\n\n## Todos\n1. [ ] create `app.py` — does a thing\n"
+    )
+    assert "python3-pytest" not in final
+    assert "python3 app.py --dry-run" in final
+
+
+def test_no_pytest_install_when_pytest_is_on_path(memory: WorkspaceMemory, monkeypatch) -> None:
+    toolchains, which = _which_pytest(True)
+    monkeypatch.setattr(toolchains.shutil, "which", which)
+    final = memory.render_finalized_plan(
+        "# Plan\nGoal: test the app\n\n## Todos\n"
+        "1. [ ] create `app.py` — cli\n"
+        "2. [ ] run `python3 -m pytest tests/test_app.py -q` — expect success\n"
+    )
+    assert "python3-pytest" not in final
+
+
+def test_generic_import_smoke_keeps_the_import_after_dry_run(
+    memory: WorkspaceMemory,
+) -> None:
+    final = memory.render_finalized_plan(
+        "# Plan\nGoal: a small module.\n\n## Todos\n"
+        "1. [ ] create `app.py` — cli\n"
+        '2. [ ] run `python3 -c "import app"` — expect success\n'
+    )
+    assert 'python3 app.py --dry-run && python3 -c "import app"' in final
+
+
+def test_dry_run_only_behavior_regains_the_import_smoke(
+    memory: WorkspaceMemory,
+) -> None:
+    """The plan example is a dry-run; the import check must still be there."""
+    final = memory.render_finalized_plan(
+        "# Plan\nGoal: a small module.\n\n## Todos\n"
+        "1. [ ] create `greet.py` — greet(name)\n"
+        "2. [ ] run `python3 -m py_compile greet.py` — expect success\n"
+        "3. [ ] run `python3 greet.py --dry-run` — expect success\n"
+    )
+    assert 'python3 greet.py --dry-run && python3 -c "import greet"' in final
+
+
+def test_specific_run_keeps_its_command_after_dry_run(memory: WorkspaceMemory) -> None:
+    final = memory.render_finalized_plan(
+        "# Plan\nGoal: C++ square root.\n\n## Todos\n"
+        "1. [ ] create `square_root.cpp` — sqrt of argv\n"
+        "2. [ ] run `./square_root 9` — expect 3\n"
+    )
+    assert "./square_root --dry-run && ./square_root 9" in final
+
+
+def test_fastapi_route_verify_is_not_replaced_by_dry_run(memory: WorkspaceMemory) -> None:
+    final = memory.render_finalized_plan(
+        "# Plan\nGoal: a FastAPI endpoint for beers.\n\n## Todos\n"
+        "1. [ ] create `db.py` — FastAPI app\n"
+    )
+    assert "app.routes" in final
+    assert "python3 db.py --dry-run &&" not in final
+    assert "--dry-run" in final
+    assert "print route paths" in final
+
+
+def test_compact_plan_folds_completed_todos_into_done(memory: WorkspaceMemory) -> None:
+    memory.write_plan(
+        "# Plan\n"
+        "Goal: build b.py\n"
+        "\n"
+        "Notes: keep me\n"
+        "\n"
+        "## Todos\n"
+        "1. [x] create `b.py` — module\n"
+        "2. [ ] refine `b.py` — add flag\n"
+        "3. [!] run `python3 b.py --dry-run` — expect success\n"
+    )
+    final = memory.compact_plan()
+    assert final is not None
+    assert "Goal: build b.py" in final
+    assert "Notes: keep me" in final
+    assert "[x]" not in final
+    assert "refine `b.py`" in final
+    assert "[!]" in final and "python3 b.py --dry-run" in final
+    assert "Done:" in final and "`b.py`" in final
+    assert "py_compile" not in final
+    session = memory.session_path.read_text(encoding="utf-8")
+    assert "compaction" in session
+    assert "create `b.py`" in session
+
+
+def test_compact_plan_leaves_an_open_plan_alone(memory: WorkspaceMemory) -> None:
+    memory.write_plan(
+        "# Plan\nGoal: build b.py\n\n## Todos\n1. [ ] create `b.py` — module\n"
+    )
+    before = memory.read_plan()
+    assert memory.compact_plan() is None
+    assert memory.read_plan() == before
+    assert "compaction" not in memory.session_path.read_text(encoding="utf-8")

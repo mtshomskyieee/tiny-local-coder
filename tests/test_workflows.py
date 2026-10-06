@@ -280,12 +280,86 @@ def test_test_workflow_lists_files_and_plan_steps(tmp_path: Path) -> None:
     assert "python3 -m pytest tests/test_db.py" in result["plan_text"]
     steps = result["log_lines"]
     assert any("1/3 looking for existing tests" in line for line in steps)
-    assert any("2/3 planning how tests will run" in line for line in steps)
+    assert any("2/3 asking how to test these files" in line for line in steps)
+    assert "pytest" not in seen[0]
+    assert "unittest" not in seen[0]
     assert any("3/3 executing test plan" in line for line in steps)
     assert any("tests/test_db.py" in line for line in steps)
     assert any("run `python3 -m pytest tests/test_db.py -v`" in line for line in steps)
     assert any("plan.md ready" in line for line in steps)
     assert any("finished" in line for line in steps)
+
+
+def test_test_workflow_rejects_a_plan_that_edits_the_program(tmp_path: Path) -> None:
+    """The model may not park a test class in the program file. Any language."""
+    mem = _memory(tmp_path)
+    (tmp_path / "calculator.py").write_text(
+        "def rpn(expr):\n    return 1\n",
+        encoding="utf-8",
+    )
+    answers = [
+        "CREATE: calculator.py\nRUN: make test\n",
+        "CREATE: tests/test_calculator.py\nRUN: make test\n",
+    ]
+
+    class Seq(_FakePipeline):
+        def invoke(self, mode: str, prompt: str = "", **_extra: object) -> dict:
+            self.modes.append(mode)
+            if mode == "plan":
+                return {"output": answers.pop(0), "last_file": "plan.md"}
+            return {"output": "executed"}
+
+    result = run_workflow(Seq(mem, ""), "test")  # type: ignore[arg-type]
+    assert "create `calculator.py`" not in result["plan_text"]
+    assert "refine `calculator.py`" not in result["plan_text"]
+    assert "create `tests/test_calculator.py`" in result["plan_text"]
+    assert "make test" in result["plan_text"]
+    assert "pytest" not in result["plan_text"]
+    assert "unittest" not in result["plan_text"]
+
+
+def test_review_fix_leaves_missing_tests_for_the_test_stage(tmp_path: Path) -> None:
+    mem = _memory(tmp_path)
+    (tmp_path / "calculator.py").write_text("print('hi')\n", encoding="utf-8")
+    mem.write_prototype(
+        REVIEW_NAME,
+        "# Code review\n\n"
+        "### `calculator.py`\n\n"
+        "- **medium**: No obvious unit test covering this module.\n"
+        "- **low** (L1): Debug `print` left in source.\n",
+    )
+    seen: list[str] = []
+
+    class Capture(_FakePipeline):
+        def invoke(self, mode: str, prompt: str = "", **_extra: object) -> dict:
+            if mode == "plan":
+                seen.append(prompt)
+            return super().invoke(mode, prompt, **_extra)
+
+    result = run_workflow(
+        Capture(mem, "Goal: fix\n1. [ ] refine `calculator.py` — remove print\n"),  # type: ignore[arg-type]
+        "review-fix",
+    )
+    assert seen
+    assert "unit test" not in seen[0].lower()
+    assert "print" in seen[0].lower()
+    assert result["skipped_execute"] is False
+    assert any("left for /test" in line for line in result["log_lines"])
+
+
+def test_review_fix_skips_when_the_only_finding_is_a_missing_test(tmp_path: Path) -> None:
+    mem = _memory(tmp_path)
+    (tmp_path / "app.py").write_text("x = 1\n", encoding="utf-8")
+    mem.write_prototype(
+        REVIEW_NAME,
+        "# Code review\n\n"
+        "### `app.py`\n\n"
+        "- **medium**: No obvious unit test covering this module.\n",
+    )
+    pipe = _FakePipeline(mem, "Goal: leftover\n1. [ ] refine `app.py` — add a test\n")
+    result = run_workflow(pipe, "review-fix")  # type: ignore[arg-type]
+    assert pipe.modes == []
+    assert result["skipped_execute"] is True
 
 
 def test_test_workflow_notes_missing_tests(tmp_path: Path) -> None:

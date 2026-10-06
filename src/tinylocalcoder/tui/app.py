@@ -256,6 +256,7 @@ _HELP = """[b]Commands[/b]
   [b]/plan-edit[/]     — full-screen edit plan.md (Save applies standards; Undo if rewritten)
   [b]/clear-plan[/]    — reset plan.md to empty todos (code files kept)
   [b]/archive-plan[/]  — save plan.md under workspace/archives/ then clear
+  [b]/compaction[/]    — fold completed todos into Done:; keep the full plan in session.md
   [b]/archive name[/]  — copy entire workspace into workspace/archive/<name>
   [b]/clear-workspace[/] — move everything (except archive/) into archive/<timestamp>, blank plan/ask
   [b]/plan show|clear|archive|edit[/] — same as above
@@ -611,6 +612,22 @@ class TinyLocalCoderTui(App[None]):
         if cmd in {"clear-plan", "plan-clear"}:
             self.pipeline.memory.clear_plan()
             log.write("[green]/clear-plan[/] — plan.md reset to empty Goal/Todos template.")
+            self._refresh_status()
+            return True
+        if cmd == "compaction":
+            todos = self.pipeline.memory.parse_todos()
+            n_done = sum(1 for t in todos if t.done and not t.skipped)
+            compacted = self.pipeline.memory.compact_plan()
+            if compacted is None:
+                log.write(
+                    "[dim]/compaction[/] — plan already compact (no completed todos)."
+                )
+                return True
+            log.write(
+                f"[green]/compaction[/] — folded {n_done} completed todo(s) into "
+                "Done:; full plan saved to [cyan]session.md[/]."
+            )
+            self._show_current_plan()
             self._refresh_status()
             return True
         if cmd in {"archive-plan", "plan-archive"}:

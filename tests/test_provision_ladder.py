@@ -86,6 +86,47 @@ def test_a_failed_install_is_reported_as_an_environment_error(
     assert result["status"] == "skipped"
 
 
+def test_missing_toolchain_routes_to_install_when_auto_fix_is_off(
+    memory: WorkspaceMemory, settings: Settings, no_toolchain
+) -> None:
+    """Integration runs disable auto-fix. A missing gcc must still be installed."""
+    memory.write_plan(_CPP_PLAN)
+    memory.write_last_failure(dict(_MAKE_MISSING))
+    settings.auto_fix = False
+    settings.auto_install = True
+    pipe = Pipeline(memory=memory, settings=settings)
+    assert (
+        pipe._after_execute_step(
+            {"status": "failed", "mode": "execute", "fix_attempts": 0}
+        )
+        == "auto_fix"
+    )
+
+
+def test_code_failure_stays_off_the_fix_node_when_auto_fix_is_off(
+    memory: WorkspaceMemory, settings: Settings
+) -> None:
+    memory.write_plan(_CPP_PLAN)
+    memory.write_last_failure(
+        {
+            "step": 2,
+            "command": "make",
+            "exit_code": 2,
+            "stderr": "square_root.cpp:3: error: expected ';'\n",
+        }
+    )
+    settings.auto_fix = False
+    settings.auto_install = True
+    settings.auto_skip = False
+    pipe = Pipeline(memory=memory, settings=settings)
+    assert (
+        pipe._after_execute_step(
+            {"status": "failed", "mode": "execute", "fix_attempts": 0}
+        )
+        != "auto_fix"
+    )
+
+
 def test_auto_install_off_falls_through_to_the_normal_ladder(
     memory: WorkspaceMemory, settings: Settings
 ) -> None:

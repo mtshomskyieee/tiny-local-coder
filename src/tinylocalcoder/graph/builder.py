@@ -559,9 +559,19 @@ class Pipeline:
 
         if status == "failed":
             attempts = int(state.get("fix_attempts") or 0)
+            failure = self.memory.read_last_failure() or {}
+            # A missing compiler is an apt-get, not a code patch. AUTO_FIX=false
+            # must not suppress it — the install lives in the fix node, and
+            # that node returns before any LLM call when the failure is
+            # environmental.
+            if (
+                self.settings.auto_install
+                and attempts < 1
+                and classify_failure(failure) == "environment"
+            ):
+                return "auto_fix"
             if self.settings.auto_fix and attempts < self.settings.auto_fix_max:
                 return "auto_fix"
-            failure = self.memory.read_last_failure() or {}
             if self._can_replan(state) and classify_plan_smell(
                 self.memory, failure=failure, fixes=[], needs_replan=None
             ):

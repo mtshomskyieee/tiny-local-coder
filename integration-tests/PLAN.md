@@ -8,10 +8,12 @@ not the TUI.
 | --- | --- | --- |
 | [`run-hello-world-c.sh`](run-hello-world-c.sh) | C | `hello-world.c`, a `gcc` compile todo, an executable `hello-world` |
 | [`run-hello-world-py.sh`](run-hello-world-py.sh) | Python | `greet.py`, a `py_compile` todo, `__pycache__/greet.*.pyc` |
+| [`run-hello-world-rust.sh`](run-hello-world-rust.sh) | Rust | `hello-world.rs`, a `rustc` compile todo, an executable `hello-world` |
 
 ```bash
 ./integration-tests/run-hello-world-c.sh
 ./integration-tests/run-hello-world-py.sh
+./integration-tests/run-hello-world-rust.sh
 ```
 
 Run them one at a time: each one owns the live `./workspace` and the compose
@@ -79,6 +81,12 @@ Why each language is worth a test:
   `python3 -c`. It additionally asserts the negatives — no other language's
   build command leaks in, and no `apt-get` todo appears for a toolchain that
   is already installed.
+- **Rust** is the same create → compile → run path for another registry
+  language. The planner must emit a `rustc` or `cargo` build and a
+  `./hello-world` run for `hello-world.rs`, and must not fall back to `gcc`
+  or `python3`. Execute then uses a fixed `rustc -o hello-world
+  hello-world.rs` plan. `rustc` is not in the base image; a missing compiler
+  is installed with apt during execute, the same way a missing `gcc` is.
 
 ## Sequence
 

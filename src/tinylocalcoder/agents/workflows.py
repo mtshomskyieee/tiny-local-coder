@@ -7,8 +7,9 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal
 
 from tinylocalcoder.exec.gate import Decision
-from tinylocalcoder.memory.files import TodoStep, WorkspaceMemory
-from tinylocalcoder.toolchains import toolchain_for_path
+from tinylocalcoder.agents.thinking import TEST_GUIDANCE_LEAD
+from tinylocalcoder.memory.files import TodoStep, WorkspaceMemory, is_valid_run_command
+from tinylocalcoder.toolchains import is_build_filename, is_test_path, toolchain_for_path
 from tinylocalcoder.tools.manifest import (
     MANIFEST_NAME,
     fulfill_open_manifest_todos,
@@ -49,18 +50,18 @@ Required shape:
 
 Return the FULL plan.md only."""
 
-TEST_PROMPT = """Write a SHORT numbered todo plan that IS a runnable test plan for this workspace.
+TEST_PROMPT = f"""{TEST_GUIDANCE_LEAD}
 
-Goal: find existing tests and run them (or add a tiny missing smoke test if none exist).
+Reply with exactly two lines:
+CREATE: <a new test file path, or - if a test file already exists>
+RUN: <one short command that runs the tests and exits>
 
-Required shape:
-1. Prefer run todos that execute real tests in the language the workspace is already written in:
-   Python `python3 -m pytest`, a Makefile `make test`, `cargo test`, `go test ./...`, `npm test`.
-2. If there are no tests, create ONE tiny test in that same language, then ONE run step.
-3. Prefer ≤8 todos. Creates first (only if needed), then run steps. No servers. No meta commands as todos.
-4. Paths/commands are workspace-relative.
-
-Return the FULL plan.md only — that plan is the test plan to execute next."""
+Rules:
+1. Do not switch languages. Do not edit a source file that already exists.
+2. If test files are listed, CREATE is - and RUN executes those files.
+3. If no test files exist, CREATE is one new test file, then RUN runs that file.
+4. One command. No servers. No installers. No meta commands as todos.
+"""
 
 REVIEW_FIX_PROMPT = """Write a SHORT numbered todo plan that FIXES the issues in review.md.
 
@@ -346,6 +347,151 @@ def _todo_bullet(todo: TodoStep) -> str:
     return f"{todo.number}. [{mark}] {todo.action} `{todo.target}`{desc}"
 
 
+def _program_sources(memory: WorkspaceMemory) -> list[str]:
+    """Live source files that are not themselves tests."""
+    found: list[str] = []
+    for rel in memory.list_files():
+        norm = rel.replace("\\", "/")
+        if is_test_path(norm) or is_build_filename(norm):
+            continue
+        if norm.endswith("__init__.py"):
+            continue
+        if toolchain_for_path(norm) is None:
+            continue
+        found.append(norm)
+    return found
+
+
+_CREATE_LINE = re.compile(r"^CREATE:\s*(.+)$", re.IGNORECASE)
+_RUN_LINE = re.compile(r"^RUN:\s*(.+)$", re.IGNORECASE)
+_MISSING_TEST_RE = re.compile(r"unit test", re.IGNORECASE)
+
+
+def _parse_test_guidance(text: str) -> tuple[str | None, str | None]:
+    """Pull CREATE and RUN lines out of a model reply. CREATE '-' means none."""
+    create: str | None = None
+    run: str | None = None
+    for raw in (text or "").splitlines():
+        line = raw.strip().strip("`")
+        created = _CREATE_LINE.match(line)
+        if created:
+            value = created.group(1).strip().strip("`").strip()
+            if value.lower() in {"-", "none", "n/a", ""}:
+                create = None
+            else:
+                create = value.lstrip("./")
+            continue
+        ran = _RUN_LINE.match(line)
+        if ran:
+            run = ran.group(1).strip().strip("`").strip()
+    return create, run
+
+
+def _guidance_is_usable(
+    memory: WorkspaceMemory, create: str | None, run: str | None
+) -> bool:
+    """A usable answer names a legal run, and a new file when nothing tests yet."""
+    if not run or not is_valid_run_command(run):
+        return False
+    if create:
+        norm = create.replace("\\", "/")
+        if norm in set(_program_sources(memory)):
+            return False
+        if is_build_filename(norm):
+            return False
+        return True
+    return bool(_list_workspace_tests(memory))
+
+
+def _write_test_guidance_plan(
+    memory: WorkspaceMemory, create: str | None, run: str
+) -> None:
+    """Write the two-line answer as todos without finalize_plan."""
+    sources = _program_sources(memory)
+    shown = ", ".join(f"`{path}`" for path in sources[:4]) or "the sources"
+    todos: list[TodoStep] = []
+    number = 1
+    if create:
+        todos.append(
+            TodoStep(
+                number=number,
+                action="create",
+                target=create.replace("\\", "/"),
+                description=f"test {shown}; do not modify those files",
+                done=False,
+                raw_line="",
+            )
+        )
+        number += 1
+    todos.append(
+        TodoStep(
+            number=number,
+            action="run",
+            target=run,
+            description="expect success",
+            done=False,
+            raw_line="",
+        )
+    )
+    goal = memory.plan_goal() or "Test the workspace"
+    memory.write_plan(
+        memory._rewrite_plan_from_todos(goal, todos, strip_meta=True)
+    )
+
+
+def _sanitize_written_test_plan(memory: WorkspaceMemory) -> bool:
+    """Drop edits of existing program files. Keep a run, plus a new file if needed."""
+    programs = set(_program_sources(memory))
+    kept: list[TodoStep] = []
+    for todo in memory.parse_todos():
+        if todo.action in {"create", "write", "refine"}:
+            target = (todo.target or "").replace("\\", "/")
+            if target in programs:
+                continue
+        if todo.action in {"run", "test"} and not is_valid_run_command(todo.target or ""):
+            continue
+        kept.append(todo)
+    open_runs = [
+        t for t in kept if t.action in {"run", "test"} and not t.done
+    ]
+    open_creates = [
+        t
+        for t in kept
+        if t.action in {"create", "write"} and not t.done
+    ]
+    if not open_runs:
+        return False
+    if not open_creates and not _list_workspace_tests(memory):
+        return False
+    goal = memory.plan_goal() or "Test the workspace"
+    memory.write_plan(
+        memory._rewrite_plan_from_todos(goal, kept, strip_meta=True)
+    )
+    return True
+
+
+def _accept_test_answer(memory: WorkspaceMemory, text: str) -> bool:
+    create, run = _parse_test_guidance(text)
+    if run and _guidance_is_usable(memory, create, run):
+        _write_test_guidance_plan(memory, create, run)
+        return True
+    return _sanitize_written_test_plan(memory)
+
+
+def _test_guidance_prompt(memory: WorkspaceMemory, extra: str, *, rejection: str = "") -> str:
+    sources = "\n".join(_program_sources(memory)) or "(none)"
+    tests = "\n".join(_list_workspace_tests(memory)) or "(none)"
+    note = f"\nRejected: {rejection}\n" if rejection else ""
+    user = (extra or "").strip()
+    user_note = f"\nUser note:\n{user}\n" if user else ""
+    return (
+        f"{workflow_prompt('test')}\n\n"
+        f"Source files:\n{sources}\n\n"
+        f"Existing test files:\n{tests}\n"
+        f"{note}{user_note}"
+    )
+
+
 def _run_test(
     pipeline: Pipeline,
     extra: str,
@@ -365,15 +511,39 @@ def _run_test(
     else:
         _trace(pipeline, log_lines, "test » no test files yet — plan may add a smoke test")
 
-    listed = "\n".join(tests) if tests else "(none found)"
-    prompt = (
-        f"{workflow_prompt('test', extra)}\n\n"
-        f"Existing test files (prefer running these; do not invent extra suites):\n"
-        f"{listed}\n"
-    )
-    _trace(pipeline, log_lines, "test » 2/3 planning how tests will run")
+    _trace(pipeline, log_lines, "test » 2/3 asking how to test these files")
+    prompt = _test_guidance_prompt(pipeline.memory, extra)
     plan_result = pipeline.invoke("plan", prompt, **invoke_extra)
     plan_out = str(plan_result.get("output") or "").strip()
+    if not _accept_test_answer(pipeline.memory, plan_out):
+        _trace(
+            pipeline,
+            log_lines,
+            "test » answer edited an existing program file or was not a test command — asking once more",
+        )
+        retry = _test_guidance_prompt(
+            pipeline.memory,
+            extra,
+            rejection=(
+                "Do not name an existing source file. "
+                "Reply with CREATE and RUN only, in the language of the source files."
+            ),
+        )
+        plan_result = pipeline.invoke("plan", retry, **invoke_extra)
+        plan_out = str(plan_result.get("output") or "").strip()
+        if not _accept_test_answer(pipeline.memory, plan_out):
+            _trace(pipeline, log_lines, "test » no usable test plan — not executing")
+            return {
+                "workflow": "test",
+                "log_lines": log_lines,
+                "plan_output": plan_out,
+                "plan_text": pipeline.memory.read_plan().strip(),
+                "test_files": tests,
+                "output": "Test workflow: model did not produce a separate test file and a run command.",
+                "last_file": "plan.md",
+                "progress": pipeline.memory.progress_summary(),
+                "skipped_execute": True,
+            }
     todos = pipeline.memory.parse_todos()
     _trace(pipeline, log_lines, f"test » plan.md ready ({len(todos)} step(s))")
     for todo in todos:
@@ -423,6 +593,14 @@ def _run_review_fix(
 ) -> dict[str, Any]:
     log_lines: list[str] = []
     body, issues = _load_review_for_fix(pipeline, extra, log_lines)
+    deferred = [i for i in issues if _MISSING_TEST_RE.search(i.message or "")]
+    if deferred:
+        _trace(
+            pipeline,
+            log_lines,
+            "review-fix » missing tests are left for /test, not applied by editing the program",
+        )
+    issues = [i for i in issues if i not in deferred]
     listed = format_issues_for_plan(issues)
     merged: dict[str, Any] = {
         "workflow": "review-fix",

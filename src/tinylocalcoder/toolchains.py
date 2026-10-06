@@ -46,6 +46,7 @@ class Toolchain:
     fix_hint: str = ""
     compile_cmd: Callable[[list[str]], str | None] | None = None
     smoke_cmd: Callable[[list[str]], str | None] | None = None
+    dry_run_cmd: Callable[[list[str]], str | None] | None = None
     diagnostics: tuple[re.Pattern[str], ...] = ()
 
     def owns_path(self, path: str) -> bool:
@@ -155,6 +156,20 @@ def _cfamily_smoke(suffixes: tuple[str, ...]):
     return build
 
 
+def _cfamily_dry_run(suffixes: tuple[str, ...]):
+    def build(paths: list[str]) -> str | None:
+        srcs = [
+            p
+            for p in _sources(paths, suffixes)
+            if Path(p).suffix.lower() not in {".h", ".hpp", ".hh", ".hxx"}
+        ]
+        if not srcs:
+            return None
+        return f"./{_binary_name(srcs)} --dry-run"
+
+    return build
+
+
 def _python_compile(paths: list[str]) -> str | None:
     srcs = [p for p in paths if p.endswith(".py") and not p.endswith("__init__.py")]
     if not srcs:
@@ -174,6 +189,17 @@ def _python_smoke(paths: list[str]) -> str | None:
     return f'PYTHONPATH={parent} python3 -c "import {stem}"'
 
 
+def _python_dry_run(paths: list[str]) -> str | None:
+    srcs = [
+        p
+        for p in paths
+        if p.endswith(".py") and not p.endswith("__init__.py") and not is_test_path(p)
+    ]
+    if not srcs:
+        return None
+    return f"python3 {srcs[0]} --dry-run"
+
+
 def _rust_compile(paths: list[str]) -> str | None:
     if any(Path(p).name == "Cargo.toml" for p in paths):
         return "cargo build"
@@ -190,6 +216,13 @@ def _rust_smoke(paths: list[str]) -> str | None:
     return f"./{_binary_name(srcs)}" if srcs else None
 
 
+def _rust_dry_run(paths: list[str]) -> str | None:
+    if any(Path(p).name == "Cargo.toml" for p in paths):
+        return "cargo run -- --dry-run"
+    srcs = _sources(paths, (".rs",))
+    return f"./{_binary_name(srcs)} --dry-run" if srcs else None
+
+
 def _go_compile(paths: list[str]) -> str | None:
     srcs = _sources(paths, (".go",))
     if not srcs:
@@ -202,6 +235,11 @@ def _go_smoke(paths: list[str]) -> str | None:
     return f"./{_binary_name(srcs)}" if srcs else None
 
 
+def _go_dry_run(paths: list[str]) -> str | None:
+    srcs = _sources(paths, (".go",))
+    return f"./{_binary_name(srcs)} --dry-run" if srcs else None
+
+
 def _ruby_compile(paths: list[str]) -> str | None:
     srcs = _sources(paths, (".rb",))
     return f"ruby -c {srcs[0]}" if srcs else None
@@ -210,6 +248,11 @@ def _ruby_compile(paths: list[str]) -> str | None:
 def _ruby_smoke(paths: list[str]) -> str | None:
     srcs = _sources(paths, (".rb",))
     return f"ruby {srcs[0]}" if srcs else None
+
+
+def _ruby_dry_run(paths: list[str]) -> str | None:
+    srcs = _sources(paths, (".rb",))
+    return f"ruby {srcs[0]} --dry-run" if srcs else None
 
 
 def _node_compile(paths: list[str]) -> str | None:
@@ -222,6 +265,11 @@ def _node_smoke(paths: list[str]) -> str | None:
     return f"node {srcs[0]}" if srcs else None
 
 
+def _node_dry_run(paths: list[str]) -> str | None:
+    srcs = _sources(paths, (".js", ".mjs", ".cjs"))
+    return f"node {srcs[0]} --dry-run" if srcs else None
+
+
 def _java_compile(paths: list[str]) -> str | None:
     srcs = _sources(paths, (".java",))
     return f"javac {' '.join(srcs)}" if srcs else None
@@ -230,6 +278,11 @@ def _java_compile(paths: list[str]) -> str | None:
 def _java_smoke(paths: list[str]) -> str | None:
     srcs = _sources(paths, (".java",))
     return f"java {Path(srcs[0]).stem}" if srcs else None
+
+
+def _java_dry_run(paths: list[str]) -> str | None:
+    srcs = _sources(paths, (".java",))
+    return f"java {Path(srcs[0]).stem} --dry-run" if srcs else None
 
 
 _CPP_SUFFIXES = (".cpp", ".cc", ".cxx", ".hpp", ".hh", ".hxx")
@@ -256,11 +309,12 @@ _register(
         plan_example=(
             "1. [ ] create `app.py` — what this file must do\n"
             "2. [ ] run `python3 -m py_compile app.py` — expect success\n"
-            '3. [ ] run `python3 -c "import app"` — expect success'
+            "3. [ ] run `python3 app.py --dry-run && python3 -c \"import app\"` — expect success"
         ),
         fix_hint="Python failure: fix the module, imports, or a missing __init__.py.",
         compile_cmd=_python_compile,
         smoke_cmd=_python_smoke,
+        dry_run_cmd=_python_dry_run,
         diagnostics=(_PY_TRACEBACK,),
     )
 )
@@ -288,6 +342,7 @@ _register(
         ),
         compile_cmd=_cfamily_compile("g++", "-std=c++17", _CPP_SUFFIXES),
         smoke_cmd=_cfamily_smoke(_CPP_SUFFIXES),
+        dry_run_cmd=_cfamily_dry_run(_CPP_SUFFIXES),
         diagnostics=(_GCC_ERROR, _MAKE_ERROR, _LD_UNDEFINED),
     )
 )
@@ -300,7 +355,8 @@ _register(
         run_prefixes=("gcc", "cc", "clang", "make"),
         compile_prefixes=("gcc", "cc", "clang", "make"),
         probe="gcc",
-        apt_packages=("gcc", "make"),
+        # libc6-dev: the gcc package on a slim image does not pull stdio.h.
+        apt_packages=("gcc", "libc6-dev", "make"),
         keywords=(" c ", "gcc", "ansi c", "c99", "c11"),
         plan_example=(
             "1. [ ] create `hello.c` — what this file must do\n"
@@ -313,6 +369,7 @@ _register(
         ),
         compile_cmd=_cfamily_compile("gcc", "-std=c11", _C_SUFFIXES),
         smoke_cmd=_cfamily_smoke(_C_SUFFIXES),
+        dry_run_cmd=_cfamily_dry_run(_C_SUFFIXES),
         diagnostics=(_GCC_ERROR, _MAKE_ERROR, _LD_UNDEFINED),
     )
 )
@@ -335,6 +392,7 @@ _register(
         fix_hint="Rust failure: fix the source; rustc points at the exact span.",
         compile_cmd=_rust_compile,
         smoke_cmd=_rust_smoke,
+        dry_run_cmd=_rust_dry_run,
         diagnostics=(_RUSTC_ERROR,),
     )
 )
@@ -357,6 +415,7 @@ _register(
         fix_hint="Go failure: fix the source; the compiler names file:line.",
         compile_cmd=_go_compile,
         smoke_cmd=_go_smoke,
+        dry_run_cmd=_go_dry_run,
         diagnostics=(_GO_ERROR,),
     )
 )
@@ -379,6 +438,7 @@ _register(
         fix_hint="Ruby failure: fix the script; the interpreter names file:line.",
         compile_cmd=_ruby_compile,
         smoke_cmd=_ruby_smoke,
+        dry_run_cmd=_ruby_dry_run,
         diagnostics=(_RUBY_ERROR,),
     )
 )
@@ -401,6 +461,7 @@ _register(
         fix_hint="Node failure: fix the script; the stack names file:line.",
         compile_cmd=_node_compile,
         smoke_cmd=_node_smoke,
+        dry_run_cmd=_node_dry_run,
         diagnostics=(_NODE_ERROR,),
     )
 )
@@ -423,6 +484,7 @@ _register(
         fix_hint="Java failure: fix the source; javac names file:line.",
         compile_cmd=_java_compile,
         smoke_cmd=_java_smoke,
+        dry_run_cmd=_java_dry_run,
         diagnostics=(_JAVA_ERROR,),
     )
 )
@@ -682,3 +744,179 @@ def install_command(toolchains: Iterable[Toolchain]) -> str:
         "apt-get update && apt-get install -y --no-install-recommends "
         + " ".join(packages)
     )
+
+
+# Debian package that provides the `pytest` binary. Installed only when a
+# Python plan actually runs pytest and that binary is absent — never for C++.
+PYTEST_PACKAGE = "python3-pytest"
+
+_NON_PYTHON_APT = frozenset(
+    {
+        "g++",
+        "gcc",
+        "make",
+        "clang",
+        "clang++",
+        "cmake",
+        "rustc",
+        "cargo",
+        "golang-go",
+        "ruby-full",
+        "nodejs",
+        "npm",
+        "default-jdk",
+    }
+)
+
+_GENERIC_IMPORT = re.compile(
+    r"""^python3?\s+-c\s+(?P<q>["'])import\s+\w+(?P=q)\s*$"""
+)
+_HEADER_SUFFIXES = frozenset({".h", ".hpp", ".hh", ".hxx"})
+
+
+def is_test_path(path: str) -> bool:
+    """True for files under a test directory or named test_* / *_test, any language."""
+    norm = (path or "").replace("\\", "/").strip("/")
+    if not norm:
+        return False
+    parts = norm.split("/")
+    name = parts[-1]
+    if "tests" in parts or "test" in parts:
+        return True
+    stem = Path(name).stem
+    return stem.startswith("test_") or stem.endswith("_test") or stem == "test"
+
+
+def is_build_filename(path: str) -> bool:
+    """True for Makefile / Cargo.toml / package.json and the other filename-only markers."""
+    name = Path((path or "").replace("\\", "/")).name.lower()
+    if not name:
+        return False
+    for tc in TOOLCHAINS.values():
+        if name in {f.lower() for f in tc.filenames}:
+            if tc.extensions and name.endswith(tuple(e.lower() for e in tc.extensions)):
+                return False
+            return True
+    return False
+
+
+def plan_entrypoint(paths: Iterable[str]) -> str | None:
+    """First created source that can be a program entry, skipping tests and build files."""
+    candidates: list[str] = []
+    for raw in paths:
+        norm = (raw or "").replace("\\", "/").strip()
+        if not norm or norm.endswith("__init__.py") or is_test_path(norm) or is_build_filename(norm):
+            continue
+        tc = toolchain_for_path(norm)
+        if tc is None or not tc.extensions:
+            continue
+        if not Path(norm).name.lower().endswith(tuple(e.lower() for e in tc.extensions)):
+            continue
+        candidates.append(norm)
+    for path in candidates:
+        if Path(path).suffix.lower() not in _HEADER_SUFFIXES:
+            return path
+    return candidates[0] if candidates else None
+
+
+def dry_run_command(path: str) -> str | None:
+    """`<entry> --dry-run` for the toolchain that owns this file."""
+    tc = toolchain_for_path(path)
+    if tc is None or tc.dry_run_cmd is None:
+        return None
+    return tc.dry_run_cmd([path])
+
+
+def command_invokes_pytest(command: str) -> bool:
+    """True when a shell command (or one segment of a chain) runs pytest."""
+    for segment in re.split(r"&&|\|\||;", command or ""):
+        tokens: list[str] = []
+        for tok in segment.split():
+            if (
+                "=" in tok
+                and not tok.startswith("-")
+                and tok.split("=", 1)[0].isidentifier()
+            ):
+                continue
+            tokens.append(tok)
+        if not tokens:
+            continue
+        if Path(tokens[0]).name == "pytest":
+            return True
+        if (
+            Path(tokens[0]).name in {"python3", "python"}
+            and len(tokens) >= 3
+            and tokens[1] == "-m"
+            and tokens[2] == "pytest"
+        ):
+            return True
+    return False
+
+
+def pytest_is_missing() -> bool:
+    """True when the `pytest` binary the apt package ships is not on PATH."""
+    return shutil.which("pytest") is None
+
+
+def plan_has_python_source(paths: Iterable[str]) -> bool:
+    """Strong Python match: a created `.py` file, not a stray pytest line on a C++ plan."""
+    for raw in paths:
+        name = Path((raw or "").replace("\\", "/")).name.lower()
+        if name.endswith(".py"):
+            return True
+    return False
+
+
+def is_python_provision_command(command: str) -> bool:
+    """An apt line that installs Python, not g++/make or another language."""
+    if not is_provision_command(command):
+        return False
+    tokens = set((command or "").split())
+    if tokens & _NON_PYTHON_APT:
+        return False
+    return bool(tokens & {"python3", PYTEST_PACKAGE})
+
+
+def append_apt_package(command: str, package: str) -> str:
+    """Add a package to an existing apt-get install line, once."""
+    if package in (command or "").split():
+        return command
+    return f"{(command or '').rstrip()} {package}"
+
+
+def pytest_install_command() -> str:
+    return (
+        "apt-get update && apt-get install -y --no-install-recommends "
+        + PYTEST_PACKAGE
+    )
+
+
+def is_generic_smoke(command: str) -> bool:
+    """A synthesized smoke with no program-specific arguments (`import`, bare `./binary`)."""
+    c = (command or "").strip()
+    while True:
+        parts = c.split(maxsplit=1)
+        if (
+            len(parts) == 2
+            and "=" in parts[0]
+            and not parts[0].startswith("-")
+            and parts[0].split("=", 1)[0].isidentifier()
+        ):
+            c = parts[1].strip()
+            continue
+        break
+    if not c or "--dry-run" in c.split():
+        return False
+    if _GENERIC_IMPORT.match(c):
+        return True
+    if re.fullmatch(r"\./[\w./+-]+", c):
+        return True
+    if c == "cargo run":
+        return True
+    if re.fullmatch(r"node\s+\S+\.(?:js|mjs|cjs)", c):
+        return True
+    if re.fullmatch(r"ruby\s+\S+\.rb", c):
+        return True
+    if re.fullmatch(r"java\s+[A-Za-z_]\w*", c):
+        return True
+    return False

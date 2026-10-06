@@ -46,6 +46,7 @@ END
 Rules:
 - Paths are workspace-relative (e.g. `src/__init__.py`). Never use leading /.
 - Prefer CREATE for missing `__init__.py` only when the failing import needs that package.
+- "No module named X" is not a package marker unless a workspace directory named X already exists. Do not CREATE an __init__.py for a missing tool. Use NEEDS_REPLAN.
 - Prefer WRITE to fix imports/ports in existing files.
 - When a port is already in use, prefer killing the tracked execute PID.
 - If ImportError is "cannot import name X" and X is not defined in the module file,
